@@ -1,0 +1,413 @@
+/**
+ * commands/equipment.js - Standalone Equipment Management Command.
+ * Queries Secullum Cloud REST API and directly probes LAN equipment.
+ * Zero external dependencies.
+ */
+
+'use strict';
+
+const { listEquipments, getEquipment, uploadPunchRecords, fetchEmployees } = require('../pontoweb');
+const { normalizeEquipment } = require('../equipment');
+const { loadSession, getAddedEquipmentIds, addEquipmentId, removeEquipmentId } = require('../session');
+const { probeTcp } = require('../probe');
+const {
+  syncEquipmentDateTime,
+  collectEquipmentRecords,
+  sendEquipmentEmployees,
+} = require('../protocols/dispatcher');
+const {
+  colors,
+  symbols,
+  header,
+  section,
+  keyValue,
+  table,
+  success,
+  error: printError,
+  warn,
+  info,
+} = require('../utils');
+
+/**
+ * List all equipment registered in the active company database.
+ */
+async function equipmentListCommand() {
+  header('Secullum Cloud — Catálogo de Equipamentos');
+
+  const session = loadSession();
+  if (!session || !session.accessToken) {
+    printError('Nenhuma sessão ativa. Execute: secullum-agent-cli login');
+    process.exit(1);
+  }
+
+  if (!session.bancoSelecionado) {
+    printError('Nenhum banco de dados selecionado. Execute: secullum-agent-cli databases');
+    process.exit(1);
+  }
+
+  try {
+    process.stdout.write(`${colors.dim}Consultando API Secullum Cloud...${colors.reset}\r`);
+    const rawList = await listEquipments();
+
+    if (!Array.isArray(rawList) || rawList.length === 0) {
+      info('Nenhum equipamento cadastrado neste banco de dados.');
+      return;
+    }
+
+    const addedIds = getAddedEquipmentIds();
+    const normalizedList = rawList.map((eq) => normalizeEquipment(eq, addedIds));
+
+    // Probe LAN status for all IP equipment in parallel
+    const probedList = await Promise.all(
+      normalizedList.map(async (eq) => {
+        if (eq.comunicacao === 3 || !eq.ip) {
+          return { ...eq, probe: null };
+        }
+        const probe = await probeTcp(eq.ip, eq.porta, 1200);
+        return { ...eq, probe };
+      })
+    );
+
+    const rows = probedList.map((eq) => {
+      let lanStatus = `${colors.dim}-${colors.reset}`;
+      if (eq.comunicacao === 3) {
+        lanStatus = `${colors.dim}USB${colors.reset}`;
+      } else if (eq.probe) {
+        lanStatus = eq.probe.ok
+          ? `${colors.green}${symbols.check} Conectado (${eq.probe.latencyMs}ms)${colors.reset}`
+          : `${colors.red}${symbols.cross} Desconectado${colors.reset}`;
+      }
+
+      const agentStatus = eq.adicionado
+        ? `${colors.green}${symbols.check} Ativo${colors.reset}`
+        : `${colors.dim}Inativo${colors.reset}`;
+
+      const networkAddr = eq.ip ? `${eq.ip}:${eq.porta}` : `${colors.dim}USB/Serial${colors.reset}`;
+
+      return [
+        String(eq.id),
+        eq.descricao,
+        eq.tipo,
+        networkAddr,
+        lanStatus,
+        agentStatus,
+      ];
+    });
+
+    table(['ID', 'Nome', 'Tipo / Modelo', 'Endereço IP', 'Status do Equipamento', 'Agente'], rows);
+
+    console.log(`\n${colors.dim}Comandos disponíveis:${colors.reset}`);
+    console.log(`  ${colors.bold('secullum-agent-cli equipment:add <id>')}     (Ativar equipamento neste agente)`);
+    console.log(`  ${colors.bold('secullum-agent-cli equipment:remove <id>')}  (Desativar equipamento deste agente)`);
+    console.log(`  ${colors.bold('secullum-agent-cli equipment:test <id>')}    (Testar conectividade TCP na rede local)\n`);
+  } catch (err) {
+    printError(`Falha ao obter equipamentos: ${err.message}`);
+    process.exit(1);
+  }
+}
+
+/**
+ * Add equipment to active polling on this agent machine.
+ * @param {string|number} id
+ */
+async function equipmentAddCommand(id) {
+  if (!id) {
+    printError('ID do equipamento é obrigatório. Exemplo: secullum-agent-cli equipment:add 2');
+    process.exit(1);
+  }
+
+  header(`Secullum Agent — Ativar Equipamento #${id}`);
+
+  let details = null;
+  try {
+    const raw = await getEquipment(id);
+    details = normalizeEquipment(raw);
+  } catch {}
+
+  addEquipmentId(id);
+  success(`Equipamento #${id} ativado para este agente.`);
+
+  if (details) {
+    keyValue('Nome', details.descricao);
+    keyValue('Tipo', details.tipo);
+    if (details.ip) keyValue('Endereço IP', `${details.ip}:${details.porta}`);
+  }
+
+  console.log(`\n${colors.dim}Ao executar 'secullum-agent-cli connect', este equipamento será atendido.${colors.reset}\n`);
+}
+
+/**
+ * Remove equipment from active polling on this agent machine.
+ * @param {string|number} id
+ */
+async function equipmentRemoveCommand(id) {
+  if (!id) {
+    printError('ID do equipamento é obrigatório. Exemplo: secullum-agent-cli equipment:remove 2');
+    process.exit(1);
+  }
+
+  header(`Secullum Agent — Desativar Equipamento #${id}`);
+  removeEquipmentId(id);
+  success(`Equipamento #${id} desativado deste agente.`);
+  console.log();
+}
+
+/**
+ * Directly probe equipment network connectivity on the LAN via TCP socket.
+ * @param {string|number} id
+ */
+async function equipmentTestCommand(id) {
+  if (!id) {
+    printError('ID do equipamento é obrigatório. Exemplo: secullum-agent-cli equipment:test 2');
+    process.exit(1);
+  }
+
+  header(`Secullum Agent — Testar Conexão Equipamento #${id}`);
+
+  process.stdout.write(`${colors.dim}Buscando dados do equipamento na nuvem...${colors.reset}\r`);
+  let eq;
+  try {
+    const raw = await getEquipment(id);
+    eq = normalizeEquipment(raw);
+  } catch (err) {
+    printError(`Equipamento #${id} não encontrado na nuvem: ${err.message}`);
+    process.exit(1);
+  }
+
+  section('Informações do Equipamento');
+  keyValue('Nome', colors.bold(eq.descricao));
+  keyValue('Tipo / Modelo', eq.tipo);
+  keyValue('Endereço IP', eq.ip || 'Sem IP configurado (USB/Serial)');
+  keyValue('Porta TCP', String(eq.porta));
+
+  if (!eq.ip) {
+    warn('Este equipamento não possui endereço IP configurado no Secullum.');
+    return;
+  }
+
+  process.stdout.write(`\n${colors.dim}Enviando socket TCP para ${eq.ip}:${eq.porta}...${colors.reset}\r`);
+  const result = await probeTcp(eq.ip, eq.porta, 3000);
+
+  section('Resultado do Teste de Conexão na Rede Local');
+  if (result.ok) {
+    success(`Socket TCP conectado com sucesso! (${result.latencyMs}ms)`);
+    keyValue('Status do Equipamento', `${colors.green}${symbols.check} Conectado${colors.reset}`);
+    keyValue('Latência', `${result.latencyMs} ms`);
+  } else {
+    printError(`Falha na conexão: ${result.error}`);
+    keyValue('Status do Equipamento', `${colors.red}${symbols.cross} Desconectado${colors.reset}`);
+    console.log(`\n${colors.dim}Diagnóstico:${colors.reset}`);
+    console.log(`  - Verifique se o relógio de ponto está ligado na tomada e na rede.`);
+    console.log(`  - Verifique se o cabo de rede está conectado ao switch ou roteador.`);
+    console.log(`  - Verifique se este computador está na mesma rede ou tem rota para ${eq.ip}.`);
+    console.log(`  - Verifique as permissões de firewall para a porta TCP ${eq.porta}.`);
+  }
+  console.log();
+}
+
+/**
+ * Synchronize date and time with equipment using its manufacturer protocol.
+ * @param {string|number} id
+ */
+async function equipmentSyncTimeCommand(id) {
+  if (!id) {
+    printError('ID do equipamento é obrigatório. Exemplo: secullum-agent-cli equipment:sync-time 3');
+    process.exit(1);
+  }
+
+  header(`Secullum Agent — Sincronizar Relógio no Equipamento #${id}`);
+
+  let eq;
+  try {
+    const raw = await getEquipment(id);
+    eq = normalizeEquipment(raw);
+  } catch (err) {
+    printError(`Equipamento #${id} não encontrado na nuvem: ${err.message}`);
+    process.exit(1);
+  }
+
+  section('Equipamento Alvo');
+  keyValue('Nome', colors.bold(eq.descricao));
+  keyValue('Tipo / Modelo', eq.tipo);
+  keyValue('Endereço IP', `${eq.ip}:${eq.porta}`);
+
+  const now = new Date();
+  keyValue('Data/Hora a Enviar', now.toLocaleString());
+
+  process.stdout.write(`\n${colors.dim}Enviando comando de sincronização de relógio via protocolo nativo...${colors.reset}\r`);
+  const res = await syncEquipmentDateTime(eq, now);
+
+  section('Resultado da Sincronização');
+  if (res.ok) {
+    success(`Data e hora sincronizadas com sucesso via protocolo ${res.manufacturer}! (${res.latencyMs}ms)`);
+  } else {
+    printError(`Falha na sincronização via protocolo ${res.manufacturer}: ${res.error}`);
+    console.log(`\n${colors.dim}Nota: Se o equipamento for homologado pela Portaria 671 ou exigir chave criptográfica, o protocolo enviou a tentativa de quadro nativa.${colors.reset}`);
+  }
+  console.log();
+}
+
+/**
+ * Collect punch records (AFD / Batidas de Ponto) from equipment and upload to Secullum Cloud.
+ * @param {string|number} id - Equipment ID
+ * @param {string[]} [extraArgs=[]]
+ */
+async function equipmentCollectCommand(id, extraArgs = []) {
+  if (!id) {
+    printError('ID do equipamento é obrigatório. Exemplo: secullum-agent-cli equipment:collect 3');
+    process.exit(1);
+  }
+
+  let count = 100;
+  let customNsr = null;
+
+  for (let i = 0; i < extraArgs.length; i++) {
+    const a = extraArgs[i];
+    if ((a === '-n' || a === '--count') && i + 1 < extraArgs.length) {
+      count = parseInt(extraArgs[++i], 10) || 100;
+    } else if ((a === '--nsr' || a === '-s') && i + 1 < extraArgs.length) {
+      customNsr = parseInt(extraArgs[++i], 10);
+    }
+  }
+
+  header(`Secullum Agent — Coleta de Marcações (AFD) #${id}`);
+
+  let eq;
+  try {
+    const raw = await getEquipment(id);
+    eq = normalizeEquipment(raw);
+  } catch (err) {
+    printError(`Equipamento #${id} não encontrado na nuvem: ${err.message}`);
+    process.exit(1);
+  }
+
+  section('Informações da Coleta');
+  keyValue('Equipamento', colors.bold(eq.descricao));
+  keyValue('Tipo / Modelo', eq.tipo);
+  keyValue('Endereço IP', `${eq.ip}:${eq.porta}`);
+  const startNsr = customNsr !== null ? customNsr : eq.ultimoNsr;
+  keyValue('NSR Inicial', String(startNsr));
+  keyValue('Limite por Lote', String(count));
+
+  process.stdout.write(`\n${colors.dim}Conectando ao REP e solicitando registros via protocolo nativo...${colors.reset}\r`);
+  const res = await collectEquipmentRecords(eq, startNsr, count);
+
+  if (!res.ok) {
+    console.log();
+    printError(`Falha na coleta de registros via protocolo ${res.manufacturer}: ${res.error}`);
+    process.exit(1);
+  }
+
+  section(`Registros Coletados do Equipamento (${res.rawCount} marcações)`);
+  if (res.records.length === 0) {
+    info(`Nenhuma nova marcação pendente no equipamento (Último NSR no relógio: ${res.lastNsr}).`);
+    console.log();
+    return;
+  }
+
+  // Display records table
+  const rows = res.records.slice(0, 15).map((r) => [
+    String(r.Nsr),
+    r.DataHora,
+    r.CPF ? `CPF: ${r.CPF}` : (r.PIS ? `PIS: ${r.PIS}` : '-'),
+    r.RegistroPortaria671 ? 'Portaria 671' : 'Portaria 1510',
+    r.CRC || '-',
+  ]);
+
+  table(['NSR', 'Data / Hora', 'Documento', 'Padrão', 'CRC'], rows);
+
+  if (res.records.length > 15) {
+    console.log(`  ${colors.dim}... e mais ${res.records.length - 15} marcações exibidas parcialmente.${colors.reset}`);
+  }
+
+  // Upload to Secullum Cloud
+  process.stdout.write(`\n${colors.dim}Enviando ${res.records.length} marcações para o Secullum PontoWeb Cloud...${colors.reset}\r`);
+  try {
+    await uploadPunchRecords(res.records, false);
+    success(`${res.records.length} marcações enviadas com sucesso para o Secullum Cloud!`);
+    keyValue('Novo Último NSR', String(res.lastNsr));
+  } catch (err) {
+    warn(`Marcações coletadas do REP, mas ocorreu falha ao salvar na nuvem: ${err.message}`);
+  }
+  console.log();
+}
+
+/**
+ * Send employee list to equipment using its manufacturer-specific protocol.
+ * @param {string|number} id - Equipment ID
+ * @param {string[]} [extraArgs=[]]
+ */
+async function equipmentSendEmployeesCommand(id, extraArgs = []) {
+  if (!id) {
+    printError('ID do equipamento é obrigatório. Exemplo: secullum-agent-cli equipment:send-employees 3');
+    process.exit(1);
+  }
+
+  header(`Secullum Agent — Enviar Funcionários ao REP #${id}`);
+
+  let eq;
+  try {
+    const raw = await getEquipment(id);
+    eq = normalizeEquipment(raw);
+  } catch (err) {
+    printError(`Equipamento #${id} não encontrado na nuvem: ${err.message}`);
+    process.exit(1);
+  }
+
+  section('Equipamento Alvo');
+  keyValue('Nome', colors.bold(eq.descricao));
+  keyValue('Tipo / Modelo', eq.tipo);
+  keyValue('Endereço IP', `${eq.ip}:${eq.porta}`);
+
+  process.stdout.write(`\n${colors.dim}Consultando funcionários ativos no Secullum Cloud...${colors.reset}\r`);
+  let employees = [];
+  try {
+    employees = await fetchEmployees();
+  } catch (err) {
+    printError(`Falha ao obter funcionários da nuvem: ${err.message}`);
+    process.exit(1);
+  }
+
+  if (!employees || employees.length === 0) {
+    warn('Nenhum funcionário encontrado no banco de dados ativo.');
+    return;
+  }
+
+  keyValue('Total de Funcionários', `${employees.length} colaboradores`);
+
+  process.stdout.write(`\n${colors.dim}Transmitindo funcionários para o REP via protocolo nativo...${colors.reset}\r`);
+  const res = await sendEquipmentEmployees(eq, employees);
+
+  section('Resultado do Envio de Funcionários');
+  if (res.ok) {
+    success(`Enviados com sucesso ${res.count} funcionários para o equipamento via protocolo ${res.manufacturer}!`);
+
+    // Preview table of first few employees
+    const rows = employees.slice(0, 8).map((emp) => [
+      String(emp.Id),
+      emp.Nome,
+      emp.Cpf || '-',
+      emp.NumeroFolha || '-',
+      emp.NumeroPis || '-',
+    ]);
+    table(['ID', 'Nome do Colaborador', 'CPF', 'Folha', 'PIS'], rows);
+
+    if (employees.length > 8) {
+      console.log(`  ${colors.dim}... e mais ${employees.length - 8} colaboradores sincronizados.${colors.reset}`);
+    }
+  } else {
+    printError(`Falha ao transmitir funcionários para o REP via protocolo ${res.manufacturer}: ${res.error}`);
+  }
+  console.log();
+}
+
+module.exports = {
+  equipmentListCommand,
+  equipmentAddCommand,
+  equipmentRemoveCommand,
+  equipmentTestCommand,
+  equipmentSyncTimeCommand,
+  equipmentCollectCommand,
+  equipmentSendEmployeesCommand,
+};
+

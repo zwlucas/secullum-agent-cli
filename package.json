@@ -1,0 +1,48 @@
+{
+  "name": "secullum-agent-cli",
+  "version": "1.0.0",
+  "description": "Standalone Secullum RH Communication Agent CLI - 100% independent cross-platform replacement for Windows and Linux",
+  "main": "bin/cli.js",
+  "bin": {
+    "secullum-agent-cli": "bin/cli.js"
+  },
+  "scripts": {
+    "start": "node bin/cli.js",
+    "build": "node scripts/build.js",
+    "test": "node --check bin/cli.js && node bin/cli.js --version",
+    "status": "node bin/cli.js status",
+    "monitor": "node bin/cli.js monitor"
+  },
+  "files": [
+    "bin/",
+    "src/",
+    "scripts/",
+    "LICENSE",
+    "README.md",
+    "package.json"
+  ],
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lucas/secullum-agent-cli.git"
+  },
+  "bugs": {
+    "url": "https://github.com/lucas/secullum-agent-cli/issues"
+  },
+  "keywords": [
+    "secullum",
+    "pontoweb",
+    "biometric",
+    "time-clock",
+    "rep",
+    "portaria-671",
+    "portaria-1510",
+    "henry",
+    "controlid",
+    "topdata",
+    "cli"
+  ],
+  "license": "MIT"
+}

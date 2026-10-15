@@ -1,0 +1,55 @@
+name: CI - Test & Build Verification
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  test-and-build:
+    name: Test & Build (${{ matrix.os }} - Node ${{ matrix.node-version }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ ubuntu-latest, windows-latest ]
+        node-version: [ 20.x, 22.x ]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      - name: Syntax Check All Source Files
+        shell: bash
+        run: |
+          for file in bin/cli.js scripts/*.js src/*.js src/**/*.js; do
+            if [ -f "$file" ]; then
+              node --check "$file"
+            fi
+          done
+          echo "All JavaScript files passed syntax verification."
+
+      - name: Test CLI Commands Execution
+        shell: bash
+        run: |
+          node bin/cli.js --help
+          node bin/cli.js --version
+
+      - name: Test Single Executable Application (SEA) Build
+        shell: bash
+        run: |
+          node scripts/build.js
+          if [ "$RUNNER_OS" == "Windows" ]; then
+            ./dist/secullum-agent.exe --help
+            ./dist/secullum-agent.exe --version
+          else
+            ./dist/secullum-agent --help
+            ./dist/secullum-agent --version
+          fi

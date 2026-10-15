@@ -1,0 +1,42 @@
+# Node.js
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+.pnpm-debug.log*
+
+# Build Outputs (Single Executable Applications & Bundles)
+dist/
+*.blob
+sea-prep.blob
+
+# Sensitive Credentials & Session Files (NEVER COMMIT)
+*.session.json
+.secullum-agent-session.json
+session.json
+
+# Process PIDs & Runtime Logs
+*.pid
+.secullum-agent.pid
+*.log
+.secullum-agent.log
+debug_daemon.log
+
+# Operating System Files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE & Editor Configurations
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+*.swp
+*~
+
+# Temporary & Scratch Dirs
+scratch/
+tmp/
+temp/
