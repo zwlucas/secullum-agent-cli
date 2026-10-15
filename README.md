@@ -27,7 +27,7 @@ O projeto conecta-se diretamente à **Nuvem Secullum (PontoWeb Cloud)** e aos **
 
 ## 🌟 Recursos Principais
 
-- ⚡ **Executável Único:** Binário `.exe` portátil de 89 MB com runtime V8 embutido via Node.js SEA (*Single Executable Application*).
+- ⚡ **Executáveis Autônomos Prontos:** Binários nativos pré-compilados para **Windows (`.exe`)** e **Linux (ELF)** disponíveis diretamente na aba de Releases, com runtime V8 embutido via Node.js SEA (*Single Executable Application*).
 - ☁️ **Comunicação Direta com Secullum Cloud:** OAuth2 nativo, API REST PontoWeb e WebSocket RealTime (SignalR / Hub `"Comunicacao"`).
 - 🕒 **Coleta Automática de Marcações (AFD / Batidas):** Coleta relatórios de batidas a partir do último NSR dos equipamentos (Portaria 1510 e Portaria 671) e realiza o envio automático para `POST /TabelaTemporaria/false`.
 - 👥 **Envio de Novos Funcionários ao REP:** Sincroniza colaboradores cadastrados na nuvem (`GET /Funcionarios`) para a memória interna dos relógios físicos.
@@ -97,24 +97,69 @@ flowchart TD
 
 ## ⚡ Como Usar o Executável Autônomo (Sem Node.js)
 
-O executável já compilado encontra-se em:
-```
-dist/secullum-agent.exe
-```
+### 📥 1. Baixar o Binário Pré-compilado (Releases)
 
-Basta copiá-lo para qualquer pasta ou computador com **Windows 10, 11 ou Windows Server (64 bits)**. **Não é necessário instalar Node.js, Python ou nenhuma dependência adicional.**
+Você não precisa instalar Node.js, compilar código ou configurar dependências. Basta acessar a página de **[Releases](../../releases)** deste repositório e baixar o binário pronto para a sua plataforma:
 
-### Execução Direta via Terminal (PowerShell / CMD):
+| Plataforma | Arquivo de Download | Descrição |
+|:---|:---|:---|
+| **Windows (x64)** | `secullum-agent-windows-x64.exe` | Executável `.exe` portátil para Windows 10, 11 e Windows Server. |
+| **Linux (x64)** | `secullum-agent-linux-x64` | Binário nativo ELF para Ubuntu, Debian, CentOS, RHEL, Alpine, etc. |
+| **Integridade** | `checksums.txt` | Hashes SHA-256 para verificação de integridade dos binários. |
+
+---
+
+### 🖥️ 2. Executando no Windows
+
+1. Baixe o arquivo `secullum-agent-windows-x64.exe` na aba de **Releases**.
+2. Abra o **PowerShell** ou o **Prompt de Comando (CMD)** na pasta onde o arquivo foi baixado.
+3. *(Opcional)* Renomeie para `secullum-agent.exe` para facilitar a digitação:
+```powershell
+Rename-Item .\secullum-agent-windows-x64.exe .\secullum-agent.exe
+```
+4. Execute os comandos normalmente:
 ```powershell
 # Exibir o painel de status
-.\dist\secullum-agent.exe status
+.\secullum-agent.exe status
 
 # Exibir a ajuda completa com todos os comandos
-.\dist\secullum-agent.exe --help
+.\secullum-agent.exe --help
 ```
 
 > [!TIP]
-> Para usar o executável de qualquer lugar sem digitar o caminho completo `.\dist\`, adicione a pasta `dist` ao seu `PATH` ou copie `secullum-agent.exe` para `C:\Windows\System32` ou sua pasta de ferramentas.
+> Para usar o executável de qualquer pasta sem digitar `.\`, copie o arquivo `secullum-agent.exe` para um diretório configurado na sua variável `PATH` (como `C:\Windows\System32` ou crie uma pasta `C:\bin` e adicione ao PATH).
+
+---
+
+### 🐧 3. Executando no Linux (Servidores, Docker, Raspberry Pi x64)
+
+1. Baixe o binário para Linux diretamente pelo terminal:
+```bash
+# Baixar o executável da última release:
+curl -LO https://github.com/SEU_USUARIO/secullum-agent-cli/releases/latest/download/secullum-agent-linux-x64
+
+# Renomear para secullum-agent:
+mv secullum-agent-linux-x64 secullum-agent
+
+# Conceder permissão de execução:
+chmod +x secullum-agent
+```
+2. Execute os comandos diretamente:
+```bash
+# Exibir o painel de status
+./secullum-agent status
+
+# Exibir a ajuda completa
+./secullum-agent --help
+```
+
+> [!TIP]
+> Para disponibilizar o comando para todos os usuários do sistema no Linux:
+> ```bash
+> sudo mv secullum-agent /usr/local/bin/secullum-agent
+> # Agora você pode executar diretamente de qualquer diretório:
+> secullum-agent status
+> ```
 
 ---
 
@@ -139,6 +184,9 @@ secullum-agent-cli status
 ---
 
 ## 📖 Tutorial Passo a Passo de Utilização
+
+> [!NOTE]
+> Nos exemplos abaixo, utilize `secullum-agent` no Linux ou `secullum-agent.exe` no Windows (ou `node bin/cli.js` caso esteja rodando diretamente com Node.js).
 
 ### Passo 1: Autenticação na Nuvem Secullum
 Autentique com a sua conta do Secullum PontoWeb:
