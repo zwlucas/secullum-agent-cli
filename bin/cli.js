@@ -60,6 +60,8 @@ const {
   equipmentSyncTimeCommand,
   equipmentCollectCommand,
   equipmentSendEmployeesCommand,
+  equipmentSendEmployerCommand,
+  equipmentReceiveEmployerCommand,
 } = require('../src/commands/equipment');
 const { connectCommand } = require('../src/commands/connect');
 const { monitorCommand } = require('../src/commands/monitor');
@@ -105,6 +107,8 @@ ${colors.bold('EQUIPMENT & MANUFACTURER PROTOCOLS:')}
   ${colors.green('equipment:sync-time <id>')} Direct clock sync via manufacturer protocol (Henry, Control iD, Topdata)
   ${colors.green('equipment:collect <id>')}   Collect punch records (AFD / Batidas) from REP and upload to cloud
   ${colors.green('equipment:send-employees <id>')} Transmit employee list from cloud to REP hardware
+  ${colors.green('equipment:send-employer <id>')}  Transmit employer data (DadosEmpregador) to REP hardware
+  ${colors.green('equipment:get-employer <id>')}   Query employer data currently stored in REP hardware
 
 ${colors.bold('DESKTOP USB BIOMETRIC READERS:')}
   ${colors.green('biometric')}                Show active biometric reader and hardware connection
@@ -259,6 +263,19 @@ async function main() {
     case 'equipment:enviar-pessoas':
     case 'equipment:funcionarios':
       await equipmentSendEmployeesCommand(extraArgs[0], extraArgs.slice(1));
+      break;
+
+    case 'equipment:send-employer':
+    case 'equipment:send-empresa':
+    case 'equipment:enviar-empregador':
+    case 'equipment:empregador':
+      await equipmentSendEmployerCommand(extraArgs[0]);
+      break;
+
+    case 'equipment:get-employer':
+    case 'equipment:receive-employer':
+    case 'equipment:obter-empregador':
+      await equipmentReceiveEmployerCommand(extraArgs[0]);
       break;
 
     case 'biometric':

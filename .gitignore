@@ -10,6 +10,7 @@ lerna-debug.log*
 dist/
 *.blob
 sea-prep.blob
+sea-config.json
 
 # Sensitive Credentials & Session Files (NEVER COMMIT)
 *.session.json

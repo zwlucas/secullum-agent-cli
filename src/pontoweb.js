@@ -186,6 +186,57 @@ async function fetchEmployees(options = {}) {
   return get('Funcionarios', options);
 }
 
+/**
+ * Fetch employer data (DadosEmpregador) for a specific equipment from Secullum Cloud.
+ * Combines header data (ObterDadosCabecalhoAFD) and company profile (Empresas/{id}).
+ * Discovered via REA in Secullum.PontoWeb.ServicoComunicacao.Services.ComunicacaoService.
+ * @param {number|string} equipId
+ * @param {object} [options]
+ * @returns {Promise<object>}
+ */
+async function fetchEmployer(equipId, options = {}) {
+  const equip = await getEquipment(equipId, options);
+  let headerData = {};
+  try {
+    headerData = await getAfdHeader(equipId, options);
+  } catch {}
+
+  let empresa = null;
+  if (equip.EmpresaId) {
+    try {
+      empresa = await get(`Empresas/${equip.EmpresaId}`, options);
+    } catch {}
+  }
+
+  let local = '';
+  if (empresa && empresa.Endereco) {
+    const parts = [
+      empresa.Endereco,
+      empresa.Bairro,
+      empresa.Uf,
+    ].filter(Boolean);
+    local = parts.join(' - ');
+  } else if (equip.Localizacao) {
+    local = equip.Localizacao;
+  }
+
+  const rawDoc = headerData.Documento || empresa?.Documento || '';
+  const cleanDoc = String(rawDoc).replace(/\D/g, '');
+  const tipoDoc = headerData.TipoDeDocumento !== undefined
+    ? headerData.TipoDeDocumento
+    : (empresa?.TipoDocumento !== undefined ? empresa.TipoDocumento : (cleanDoc.length === 11 ? 1 : 0));
+
+  return {
+    EquipamentoId: Number(equipId),
+    RazaoSocial: headerData.NomeEmpresa || empresa?.Nome || equip.Descricao || '',
+    Local: local || 'Local',
+    TipoDeDocumento: tipoDoc,
+    Documento: cleanDoc,
+    Cei: (headerData.CEI || empresa?.CEI || '0').replace(/\D/g, '') || '0',
+    NaoValidar: false,
+  };
+}
+
 module.exports = {
   PONTOWEB_BASE_URL,
   AGENT_VERSION,
@@ -198,5 +249,6 @@ module.exports = {
   getCloudVersion,
   uploadPunchRecords,
   fetchEmployees,
+  fetchEmployer,
 };
 

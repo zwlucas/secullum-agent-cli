@@ -8,12 +8,14 @@
 
 const os = require('node:os');
 const { loadSession, getAddedEquipmentIds } = require('../session');
-const { listEquipments, uploadPunchRecords, fetchEmployees } = require('../pontoweb');
+const { listEquipments, uploadPunchRecords, fetchEmployees, fetchEmployer } = require('../pontoweb');
 const { normalizeEquipment } = require('../equipment');
 const {
   syncEquipmentDateTime,
   collectEquipmentRecords,
   sendEquipmentEmployees,
+  sendEquipmentEmployer,
+  receiveEquipmentEmployer,
 } = require('../protocols/dispatcher');
 const { probeTcp } = require('../probe');
 const { captureBiometric } = require('../biometric');
@@ -243,6 +245,66 @@ async function connectCommand(args = []) {
       } catch (err) {
         warn(`Erro na captura biométrica: ${err.message}`);
         gateway.sendHubMethod('Comunicacao', 'InformarNotificacaoLeitorBiometrico', [tipoBiometria, err.message]);
+      }
+    }
+
+    // 5. Employer send request (EnviarEmpregador)
+    // Discovered via REA from Secullum.PontoWeb.ServicoComunicacao.Services.ComunicacaoService.EnviarEmpregador
+    if (evt.eventName === 'EnviarEmpregador') {
+      const equipId = evt.args[0];
+      const payloadEmployer = evt.args[1];
+      info(`Cloud requested employer data send for equipment #${equipId}`);
+      const targetRaw = allEquipments.find((e) => Number(e.Id ?? e.id) === Number(equipId));
+      if (targetRaw) {
+        const targetEq = normalizeEquipment(targetRaw);
+        gateway.sendCommunicationProgress(equipId, 'Obtendo dados do empregador...', 25);
+        try {
+          const employer = payloadEmployer || (await fetchEmployer(equipId));
+          gateway.sendCommunicationProgress(equipId, 'Transmitindo dados do empregador ao REP...', 60);
+          const res = await sendEquipmentEmployer(targetEq, employer);
+          if (res.ok) {
+            success(`Dados do empregador enviados com sucesso para #${equipId} via protocolo ${res.manufacturer}!`);
+            gateway.sendHubMethod('Comunicacao', 'InformarTerminoComunicacao', [equipId, '']);
+            gateway.sendCommunicationProgress(equipId, 'Dados do empregador enviados com sucesso', 100);
+          } else {
+            warn(`Falha ao enviar empregador para #${equipId}: ${res.error}`);
+            gateway.sendCommunicationProgress(equipId, `Falha: ${res.error}`, 0);
+          }
+        } catch (err) {
+          warn(`Erro ao enviar empregador para #${equipId}: ${err.message}`);
+          gateway.sendCommunicationProgress(equipId, `Erro: ${err.message}`, 0);
+        }
+      } else {
+        gateway.sendCommunicationProgress(equipId, 'Equipamento desconhecido', 0);
+      }
+    }
+
+    // 6. Employer receive request (ReceberEmpregador)
+    // Discovered via REA from Secullum.PontoWeb.ServicoComunicacao.Services.ComunicacaoService.ReceberEmpregador
+    if (evt.eventName === 'ReceberEmpregador') {
+      const equipId = evt.args[0];
+      info(`Cloud requested employer read from equipment #${equipId}`);
+      const targetRaw = allEquipments.find((e) => Number(e.Id ?? e.id) === Number(equipId));
+      if (targetRaw) {
+        const targetEq = normalizeEquipment(targetRaw);
+        gateway.sendCommunicationProgress(equipId, 'Lendo dados do empregador do relógio...', 50);
+        try {
+          const res = await receiveEquipmentEmployer(targetEq);
+          if (res.ok && res.employer) {
+            success(`Dados do empregador recebidos com sucesso de #${equipId}: ${res.employer.RazaoSocial}`);
+            gateway.sendHubMethod('Comunicacao', 'InformarEmpregadorEquipamento', [equipId, res.employer]);
+            gateway.sendHubMethod('Comunicacao', 'InformarTerminoComunicacao', [equipId, '']);
+            gateway.sendCommunicationProgress(equipId, 'Empregador lido com sucesso', 100);
+          } else {
+            warn(`Falha ao receber empregador de #${equipId}: ${res.error}`);
+            gateway.sendCommunicationProgress(equipId, `Falha: ${res.error}`, 0);
+          }
+        } catch (err) {
+          warn(`Erro ao receber empregador de #${equipId}: ${err.message}`);
+          gateway.sendCommunicationProgress(equipId, `Erro: ${err.message}`, 0);
+        }
+      } else {
+        gateway.sendCommunicationProgress(equipId, 'Equipamento desconhecido', 0);
       }
     }
   });

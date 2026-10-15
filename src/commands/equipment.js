@@ -6,7 +6,7 @@
 
 'use strict';
 
-const { listEquipments, getEquipment, uploadPunchRecords, fetchEmployees } = require('../pontoweb');
+const { listEquipments, getEquipment, uploadPunchRecords, fetchEmployees, fetchEmployer } = require('../pontoweb');
 const { normalizeEquipment } = require('../equipment');
 const { loadSession, getAddedEquipmentIds, addEquipmentId, removeEquipmentId } = require('../session');
 const { probeTcp } = require('../probe');
@@ -14,6 +14,8 @@ const {
   syncEquipmentDateTime,
   collectEquipmentRecords,
   sendEquipmentEmployees,
+  sendEquipmentEmployer,
+  receiveEquipmentEmployer,
 } = require('../protocols/dispatcher');
 const {
   colors,
@@ -401,6 +403,122 @@ async function equipmentSendEmployeesCommand(id, extraArgs = []) {
   console.log();
 }
 
+/**
+ * Send employer details to equipment using its manufacturer protocol.
+ * Discovered via REA from Secullum.PontoWeb.ServicoComunicacao.Services.ComunicacaoService.EnviarEmpregador.
+ * @param {string|number} id
+ */
+async function equipmentSendEmployerCommand(id) {
+  header('Secullum Cloud — Envio de Dados do Empregador');
+
+  const session = loadSession();
+  if (!session || !session.accessToken) {
+    printError('Nenhuma sessão ativa. Execute: secullum-agent-cli login');
+    process.exit(1);
+  }
+
+  if (!id) {
+    printError('Uso: secullum-agent-cli equipment:send-employer <id>');
+    process.exit(1);
+  }
+
+  let eq;
+  try {
+    process.stdout.write(`${colors.dim}Consultando equipamento #${id} no Secullum Cloud...${colors.reset}\r`);
+    const raw = await getEquipment(id);
+    eq = normalizeEquipment(raw);
+  } catch (err) {
+    printError(`Equipamento #${id} não encontrado na nuvem: ${err.message}`);
+    process.exit(1);
+  }
+
+  section('Equipamento Alvo');
+  keyValue('Nome', colors.bold(eq.descricao));
+  keyValue('Tipo / Modelo', eq.tipo);
+  keyValue('Endereço IP', `${eq.ip}:${eq.porta}`);
+
+  process.stdout.write(`\n${colors.dim}Obtendo dados cadastrais do empregador na nuvem...${colors.reset}\r`);
+  let employer;
+  try {
+    employer = await fetchEmployer(id);
+  } catch (err) {
+    printError(`Falha ao obter dados do empregador da nuvem: ${err.message}`);
+    process.exit(1);
+  }
+
+  section('Dados do Empregador');
+  const tipoDocStr = employer.TipoDeDocumento === 1 ? 'CPF' : 'CNPJ';
+  keyValue('Razão Social', colors.bold(employer.RazaoSocial));
+  keyValue('Tipo de Documento', tipoDocStr);
+  keyValue('Documento', employer.Documento);
+  keyValue('CEI / CAEPF', employer.Cei || '0');
+  keyValue('Local / Endereço', employer.Local);
+
+  process.stdout.write(`\n${colors.dim}Transmitindo dados do empregador para o REP via protocolo nativo...${colors.reset}\r`);
+  const res = await sendEquipmentEmployer(eq, employer);
+
+  section('Resultado do Envio');
+  if (res.ok) {
+    success(`Dados do empregador enviados com sucesso para o equipamento via protocolo ${res.manufacturer} (${res.latencyMs}ms)!`);
+  } else {
+    printError(`Falha ao transmitir dados do empregador via protocolo ${res.manufacturer}: ${res.error}`);
+  }
+  console.log();
+}
+
+/**
+ * Receive employer details from equipment using its manufacturer protocol.
+ * Discovered via REA from Secullum.PontoWeb.ServicoComunicacao.Services.ComunicacaoService.ReceberEmpregador.
+ * @param {string|number} id
+ */
+async function equipmentReceiveEmployerCommand(id) {
+  header('Secullum Cloud — Consulta de Empregador no REP');
+
+  const session = loadSession();
+  if (!session || !session.accessToken) {
+    printError('Nenhuma sessão ativa. Execute: secullum-agent-cli login');
+    process.exit(1);
+  }
+
+  if (!id) {
+    printError('Uso: secullum-agent-cli equipment:get-employer <id>');
+    process.exit(1);
+  }
+
+  let eq;
+  try {
+    process.stdout.write(`${colors.dim}Consultando equipamento #${id} no Secullum Cloud...${colors.reset}\r`);
+    const raw = await getEquipment(id);
+    eq = normalizeEquipment(raw);
+  } catch (err) {
+    printError(`Equipamento #${id} não encontrado na nuvem: ${err.message}`);
+    process.exit(1);
+  }
+
+  section('Equipamento Alvo');
+  keyValue('Nome', colors.bold(eq.descricao));
+  keyValue('Tipo / Modelo', eq.tipo);
+  keyValue('Endereço IP', `${eq.ip}:${eq.porta}`);
+
+  process.stdout.write(`\n${colors.dim}Consultando dados do empregador diretamente no REP...${colors.reset}\r`);
+  const res = await receiveEquipmentEmployer(eq);
+
+  section('Resultado da Consulta no REP');
+  if (res.ok && res.employer) {
+    const emp = res.employer;
+    const tipoDocStr = emp.TipoDeDocumento === 1 ? 'CPF' : 'CNPJ';
+    keyValue('Razão Social', colors.bold(emp.RazaoSocial));
+    keyValue('Tipo de Documento', tipoDocStr);
+    keyValue('Documento', emp.Documento);
+    keyValue('CEI / CAEPF', emp.Cei || '0');
+    keyValue('Local / Endereço', emp.Local);
+    success(`Empregador obtido com sucesso via protocolo ${res.manufacturer} (${res.latencyMs}ms)!`);
+  } else {
+    printError(`Falha ao consultar empregador via protocolo ${res.manufacturer}: ${res.error}`);
+  }
+  console.log();
+}
+
 module.exports = {
   equipmentListCommand,
   equipmentAddCommand,
@@ -409,5 +527,7 @@ module.exports = {
   equipmentSyncTimeCommand,
   equipmentCollectCommand,
   equipmentSendEmployeesCommand,
+  equipmentSendEmployerCommand,
+  equipmentReceiveEmployerCommand,
 };
 

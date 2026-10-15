@@ -170,11 +170,76 @@ async function sendEquipmentEmployees(eq, employees = []) {
   }
 }
 
+/**
+ * Send employer data to equipment using its manufacturer-specific protocol.
+ * Discovered via REA from Secullum.Comunicacao.IEquipamentoRep.EnviarEmpregador.
+ * @param {object} eq - Normalized equipment object
+ * @param {object} employer - DadosEmpregador
+ * @returns {Promise<{ ok: boolean, manufacturer: string, latencyMs: number, error?: string }>}
+ */
+async function sendEquipmentEmployer(eq, employer) {
+  const family = getManufacturerFamily(eq.tipoId);
+  const ip = eq.ip;
+  const port = eq.porta;
+  const password = eq.senha || '';
+
+  if (!ip) {
+    return { ok: false, manufacturer: family, latencyMs: 0, error: 'Equipment has no IP address configured' };
+  }
+
+  switch (family) {
+    case 'henry': {
+      const res = await henry.sendHenryEmployer(ip, port, employer, password);
+      return { ...res, manufacturer: 'Henry' };
+    }
+    case 'controlid': {
+      const res = await controlid.sendControlIdEmployer(ip, port, employer, 'admin', password || 'admin');
+      return { ...res, manufacturer: 'Control iD' };
+    }
+    default: {
+      return { ok: false, manufacturer: 'Generic', latencyMs: 0, error: `Employer sync for type #${eq.tipoId} not yet implemented` };
+    }
+  }
+}
+
+/**
+ * Receive employer data from equipment using its manufacturer-specific protocol.
+ * Discovered via REA from Secullum.Comunicacao.IEquipamentoRep.ReceberEmpregador.
+ * @param {object} eq - Normalized equipment object
+ * @returns {Promise<{ ok: boolean, employer?: object, manufacturer: string, latencyMs: number, error?: string }>}
+ */
+async function receiveEquipmentEmployer(eq) {
+  const family = getManufacturerFamily(eq.tipoId);
+  const ip = eq.ip;
+  const port = eq.porta;
+  const password = eq.senha || '';
+
+  if (!ip) {
+    return { ok: false, manufacturer: family, latencyMs: 0, error: 'Equipment has no IP address configured' };
+  }
+
+  switch (family) {
+    case 'henry': {
+      const res = await henry.receiveHenryEmployer(ip, port, password);
+      return { ...res, manufacturer: 'Henry' };
+    }
+    case 'controlid': {
+      const res = await controlid.getControlIdEmployer(ip, port, 'admin', password || 'admin');
+      return { ...res, manufacturer: 'Control iD' };
+    }
+    default: {
+      return { ok: false, manufacturer: 'Generic', latencyMs: 0, error: `Employer read for type #${eq.tipoId} not yet implemented` };
+    }
+  }
+}
+
 module.exports = {
   getManufacturerFamily,
   syncEquipmentDateTime,
   queryEquipmentStatus,
   collectEquipmentRecords,
   sendEquipmentEmployees,
+  sendEquipmentEmployer,
+  receiveEquipmentEmployer,
 };
 

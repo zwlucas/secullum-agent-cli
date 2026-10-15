@@ -91,7 +91,7 @@ flowchart TD
    - Handshake Inicial: `{"AccessToken": "<jwt>", "Group": "<bancoId>", "ProtocolVersion": 19, "Headers": {}}`.
    - Registro do Agente: Invoca método `EstabelecerConexaoAgente` no Hub `"Comunicacao"` enviando nome da máquina, endereço MAC e lista de equipamentos.
    - Heartbeat: Servidor envia `{"HubName": "--PING--"}` e o cliente responde `{"HubName": "--PONG--"}`.
-   - Eventos de Nuvem Atendidos: `EnviarDataHora`, `ReceberRegistros`, `EnviarListaPessoas`, `ListarPessoas`, `CapturarDigital`.
+   - Eventos de Nuvem Atendidos: `EnviarDataHora`, `ReceberRegistros`, `EnviarListaPessoas`, `ListarPessoas`, `CapturarDigital`, `EnviarEmpregador`, `ReceberEmpregador`.
 
 ---
 
@@ -252,7 +252,19 @@ secullum-agent.exe equipment:send-employees 3
 
 ---
 
-### Passo 7: Sincronização de Data e Hora
+### Passo 7: Enviar Dados do Empregador (Empresa) ao REP
+Obtém os dados cadastrais da empresa da nuvem (Razão Social, CNPJ/CPF, CEI e Endereço) e transmite diretamente ao equipamento REP via protocolo nativo do fabricante (atendendo às exigências fiscais da Portaria 1510/671):
+```bash
+# Transmitir dados do empregador para o relógio de ponto:
+secullum-agent.exe equipment:send-employer 3
+
+# Consultar dados do empregador atualmente gravados na memória do REP:
+secullum-agent.exe equipment:get-employer 3
+```
+
+---
+
+### Passo 8: Sincronização de Data e Hora
 Ajusta o relógio interno do REP via protocolo proprietário nativo:
 ```bash
 secullum-agent.exe equipment:sync-time 3
@@ -260,7 +272,7 @@ secullum-agent.exe equipment:sync-time 3
 
 ---
 
-### Passo 8: Captura no Leitor Biométrico USB de Mesa
+### Passo 9: Captura no Leitor Biométrico USB de Mesa
 ```bash
 # 1. Escanear portas USB para detectar leitores conectados:
 secullum-agent.exe biometric:scan
@@ -274,7 +286,7 @@ secullum-agent.exe biometric:capture 13
 
 ---
 
-### Passo 9: Executar o Agente em Tempo Real (Foreground)
+### Passo 10: Executar o Agente em Tempo Real (Foreground)
 Conecta ao WebSocket da nuvem, processa requisições instantâneas e mantém a auto-coleta periódica a cada 60s:
 ```bash
 secullum-agent.exe connect
@@ -283,7 +295,7 @@ secullum-agent.exe connect
 
 ---
 
-### Passo 10: Executar em Segundo Plano (Daemon / Serviço)
+### Passo 11: Executar em Segundo Plano (Daemon / Serviço)
 Para servidores ou máquinas de produção onde o terminal não deve ficar aberto:
 ```bash
 # Iniciar o agente em processo silencioso desanexado:
@@ -301,7 +313,7 @@ secullum-agent.exe daemon:stop
 
 ---
 
-### Passo 11: Instalar como Serviço Persistente do Sistema Operacional
+### Passo 12: Instalar como Serviço Persistente do Sistema Operacional
 Configura a inicialização automática junto com o boot da máquina:
 - **No Windows:** Cria uma Tarefa Agendada do Windows (`SecullumAgentCLI`) em modo de privilégio máximo com inicialização no logon.
 - **No Linux:** Cria uma unidade `systemd` (`/etc/systemd/system/secullum-agent.service`) com auto-restart em caso de falha.
@@ -316,7 +328,7 @@ secullum-agent.exe daemon:uninstall
 
 ---
 
-### Passo 12: Painel de Monitoramento ao Vivo (Dashboard Visual)
+### Passo 13: Painel de Monitoramento ao Vivo (Dashboard Visual)
 Interface de monitoramento estilo terminal com atualização a cada 3 segundos:
 ```bash
 secullum-agent.exe monitor -i 3

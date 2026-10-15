@@ -634,6 +634,199 @@ async function syncHenryDateTime(ip, port = 3000, date = new Date(), password = 
 }
 
 /**
+ * Send employer data to a Henry REP clock ("EE" command).
+ * Format: TipoDeDocumento]Documento]Cei]RazaoSocial]Local
+ * Discovered via REA from Secullum.Comunicacao.HenryRepComunicacao.EnviarEmpregador.
+ * @param {string} ip
+ * @param {number} [port=3000]
+ * @param {object} employer - DadosEmpregador
+ * @param {string} [password=""]
+ * @returns {Promise<{ ok: boolean, latencyMs: number, payload?: string, error?: string }>}
+ */
+async function sendHenryEmployer(ip, port = 3000, employer, password = '') {
+  const start = Date.now();
+  return new Promise((resolve) => {
+    const sock = net.createConnection({ host: ip, port, timeout: 7000 });
+    let resolved = false;
+
+    const finish = (result) => {
+      if (!resolved) {
+        resolved = true;
+        sock.destroy();
+        resolve(result);
+      }
+    };
+
+    sock.on('timeout', () => finish({ ok: false, latencyMs: Date.now() - start, error: 'Connection timeout' }));
+    sock.on('error', (err) => finish({ ok: false, latencyMs: Date.now() - start, error: err.message }));
+
+    sock.on('connect', async () => {
+      try {
+        const exchange = (buf) =>
+          new Promise((res, rej) => {
+            sock.write(buf);
+            const onData = (data) => {
+              sock.off('data', onData);
+              sock.off('error', rej);
+              res(data);
+            };
+            sock.once('data', onData);
+            sock.once('error', rej);
+          });
+
+        let isAdvanced = false;
+        const probe = await exchange(buildHenryFrame('RH'));
+        const parsedProbe = parseHenryFrame(probe);
+
+        if (!parsedProbe.ok || parsedProbe.cmd !== 'RH' || password) {
+          const authRes = await authenticateHenrySession(sock, password);
+          if (authRes.ok) isAdvanced = true;
+        }
+
+        // TipoDeDocumento: 1 = CNPJ, 2 = CPF (Secullum enum: 0 = CNPJ, 1 = CPF -> + 1)
+        const docDigits = String(employer.Documento || '').replace(/\D/g, '');
+        let tipoDoc = '1';
+        if (Number(employer.TipoDeDocumento) === 1 || docDigits.length === 11) {
+          tipoDoc = '2';
+        } else if (Number(employer.TipoDeDocumento) === 2) {
+          tipoDoc = '2';
+        }
+
+        const cleanDoc = docDigits;
+        const rawCei = String(employer.Cei || '').replace(/\D/g, '');
+        const cleanCei = rawCei === '0' ? '' : rawCei;
+        const cleanRazao = (employer.RazaoSocial || employer.Nome || '').slice(0, 150).replace(/[\[\]]/g, '');
+        const cleanLocal = (employer.Local || employer.Endereco || 'Local').slice(0, 150).replace(/[\[\]]/g, '');
+
+        const payloadStr = `${tipoDoc}]${cleanDoc}]${cleanCei}]${cleanRazao}]${cleanLocal}`;
+        const cmdStr = `33+EE+00+${payloadStr}`;
+
+        let respBuf;
+        if (isAdvanced) {
+          const enc = aesEncryptHenry(cmdStr, HEXA_CHAVE_AES);
+          respBuf = await exchange(frameRawPayload(enc));
+        } else {
+          respBuf = await exchange(buildHenryFrame('EE', payloadStr));
+        }
+
+        let payload = '';
+        if (isAdvanced) {
+          const pLen = respBuf[1] | (respBuf[2] << 8);
+          payload = aesDecryptHenry(respBuf.subarray(3, 3 + pLen), HEXA_CHAVE_AES).toString('ascii');
+        } else {
+          payload = parseHenryFrame(respBuf).payload;
+        }
+
+        const latencyMs = Date.now() - start;
+        if (payload.includes('+000') || payload.includes('+012') || payload.includes('+00')) {
+          finish({ ok: true, latencyMs, payload });
+        } else {
+          finish({ ok: false, latencyMs, error: `Henry REP error response: ${payload}` });
+        }
+      } catch (err) {
+        finish({ ok: false, latencyMs: Date.now() - start, error: err.message });
+      }
+    });
+  });
+}
+
+/**
+ * Receive employer data from a Henry REP clock ("RE" command).
+ * Discovered via REA from Secullum.Comunicacao.HenryRepComunicacao.ReceberEmpregador.
+ * @param {string} ip
+ * @param {number} [port=3000]
+ * @param {string} [password=""]
+ * @returns {Promise<{ ok: boolean, employer?: object, latencyMs: number, error?: string }>}
+ */
+async function receiveHenryEmployer(ip, port = 3000, password = '') {
+  const start = Date.now();
+  return new Promise((resolve) => {
+    const sock = net.createConnection({ host: ip, port, timeout: 7000 });
+    let resolved = false;
+
+    const finish = (result) => {
+      if (!resolved) {
+        resolved = true;
+        sock.destroy();
+        resolve(result);
+      }
+    };
+
+    sock.on('timeout', () => finish({ ok: false, latencyMs: Date.now() - start, error: 'Connection timeout' }));
+    sock.on('error', (err) => finish({ ok: false, latencyMs: Date.now() - start, error: err.message }));
+
+    sock.on('connect', async () => {
+      try {
+        const exchange = (buf) =>
+          new Promise((res, rej) => {
+            sock.write(buf);
+            const onData = (data) => {
+              sock.off('data', onData);
+              sock.off('error', rej);
+              res(data);
+            };
+            sock.once('data', onData);
+            sock.once('error', rej);
+          });
+
+        let isAdvanced = false;
+        const probe = await exchange(buildHenryFrame('RH'));
+        const parsedProbe = parseHenryFrame(probe);
+
+        if (!parsedProbe.ok || parsedProbe.cmd !== 'RH' || password) {
+          const authRes = await authenticateHenrySession(sock, password);
+          if (authRes.ok) isAdvanced = true;
+        }
+
+        const cmdStr = '33+RE+00';
+        let respBuf;
+        if (isAdvanced) {
+          const enc = aesEncryptHenry(cmdStr, HEXA_CHAVE_AES);
+          respBuf = await exchange(frameRawPayload(enc));
+        } else {
+          respBuf = await exchange(buildHenryFrame('RE'));
+        }
+
+        let respStr = '';
+        if (isAdvanced) {
+          const pLen = respBuf[1] | (respBuf[2] << 8);
+          respStr = aesDecryptHenry(respBuf.subarray(3, 3 + pLen), HEXA_CHAVE_AES).toString('ascii');
+        } else {
+          respStr = parseHenryFrame(respBuf).payload;
+        }
+
+        // Format is: 33+RE+000+<tipoDoc>]<doc>]<cei>]<razaoSocial>]<local>
+        const plusIdx = respStr.lastIndexOf('+');
+        const dataPart = plusIdx !== -1 ? respStr.slice(plusIdx + 1) : respStr;
+        const parts = dataPart.split(']');
+
+        if (parts.length >= 4) {
+          const rawTipo = parts[0].trim();
+          const doc = (parts[1] || '').trim();
+          const cei = (parts[2] || '').trim().replace(/^0+/, '');
+          const razaoSocial = (parts[3] || '').trim();
+          const local = (parts[4] || '').trim();
+
+          const employer = {
+            TipoDeDocumento: rawTipo === '1' ? 0 : 1, // 0 = CNPJ, 1 = CPF
+            Documento: doc,
+            Cei: cei,
+            RazaoSocial: razaoSocial,
+            Local: local,
+          };
+
+          finish({ ok: true, employer, latencyMs: Date.now() - start });
+        } else {
+          finish({ ok: false, latencyMs: Date.now() - start, error: `Invalid RE payload: ${respStr}` });
+        }
+      } catch (err) {
+        finish({ ok: false, latencyMs: Date.now() - start, error: err.message });
+      }
+    });
+  });
+}
+
+/**
  * Send an arbitrary Henry protocol command (with automatic framing).
  * @param {string} ip
  * @param {number} [port=3000]
@@ -691,6 +884,8 @@ module.exports = {
   parseHenryAfdLine,
   collectHenryRecords,
   sendHenryEmployees,
+  sendHenryEmployer,
+  receiveHenryEmployer,
   syncHenryDateTime,
   sendHenryCommand,
 };

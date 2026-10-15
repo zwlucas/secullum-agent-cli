@@ -209,6 +209,87 @@ async function sendControlIdEmployees(ip, port = 80, employees = [], login = 'ad
   }
 }
 
+/**
+ * Send employer data to a Control iD terminal (/edit_company.fcgi).
+ * Discovered via REA in Secullum.Comunicacao.Classes.Equipamentos.ControliD.ControliDRepComunicacaoNativa.EnviarEmpregador.
+ * @param {string} ip
+ * @param {number} [port=80]
+ * @param {object} employer - DadosEmpregador
+ * @param {string} [login="admin"]
+ * @param {string} [password="admin"]
+ * @returns {Promise<{ ok: boolean, latencyMs: number, error?: string }>}
+ */
+async function sendControlIdEmployer(ip, port = 80, employer, login = 'admin', password = 'admin') {
+  const start = Date.now();
+  const auth = await loginControlId(ip, port, login, password);
+  if (!auth.ok) {
+    return { ok: false, latencyMs: Date.now() - start, error: auth.error };
+  }
+
+  try {
+    const docDigits = String(employer.Documento || '').replace(/\D/g, '');
+    const ceiDigits = String(employer.Cei || '0').replace(/\D/g, '') || '0';
+    // tipo_doc: 1 = CNPJ, 2 = CPF (Secullum TipoDeDocumento enum: 0 = CNPJ, 1 = CPF -> + 1)
+    const tipoDoc = Number(employer.TipoDeDocumento) === 1 || docDigits.length === 11 ? 2 : 1;
+
+    const body = {
+      company: {
+        tipo_doc: tipoDoc,
+        cpf_cnpj: Number(docDigits),
+        cei: Number(ceiDigits),
+        cpf: 0,
+        name: (employer.RazaoSocial || employer.Nome || '').slice(0, 150),
+        address: (employer.Local || employer.Endereco || 'Local').slice(0, 150),
+      },
+    };
+
+    await controlIdRequest(ip, port, `edit_company.fcgi?session=${auth.session}`, body);
+    await logoutControlId(ip, port, auth.session);
+    return { ok: true, latencyMs: Date.now() - start };
+  } catch (err) {
+    await logoutControlId(ip, port, auth.session);
+    return { ok: false, latencyMs: Date.now() - start, error: err.message };
+  }
+}
+
+/**
+ * Get employer data from a Control iD terminal (/load_company.fcgi).
+ * Discovered via REA in Secullum.Comunicacao.Classes.Equipamentos.ControliD.ControliDRepComunicacaoNativa.ReceberEmpregador.
+ * @param {string} ip
+ * @param {number} [port=80]
+ * @param {string} [login="admin"]
+ * @param {string} [password="admin"]
+ * @returns {Promise<{ ok: boolean, employer?: object, latencyMs: number, error?: string }>}
+ */
+async function getControlIdEmployer(ip, port = 80, login = 'admin', password = 'admin') {
+  const start = Date.now();
+  const auth = await loginControlId(ip, port, login, password);
+  if (!auth.ok) {
+    return { ok: false, latencyMs: Date.now() - start, error: auth.error };
+  }
+
+  try {
+    const res = await controlIdRequest(ip, port, `load_company.fcgi?session=${auth.session}`, {});
+    await logoutControlId(ip, port, auth.session);
+
+    if (res && res.company) {
+      const c = res.company;
+      const employer = {
+        TipoDeDocumento: Number(c.tipo_doc) === 2 ? 1 : 0, // 0 = CNPJ, 1 = CPF
+        Documento: String(c.cpf_cnpj || ''),
+        Cei: String(c.cei || '').replace(/^0+/, ''),
+        RazaoSocial: c.name || '',
+        Local: c.address || '',
+      };
+      return { ok: true, employer, latencyMs: Date.now() - start };
+    }
+    return { ok: false, latencyMs: Date.now() - start, error: 'Empty employer response' };
+  } catch (err) {
+    await logoutControlId(ip, port, auth.session);
+    return { ok: false, latencyMs: Date.now() - start, error: err.message };
+  }
+}
+
 module.exports = {
   controlIdRequest,
   loginControlId,
@@ -217,5 +298,7 @@ module.exports = {
   syncControlIdDateTime,
   getControlIdLogs,
   sendControlIdEmployees,
+  sendControlIdEmployer,
+  getControlIdEmployer,
 };
 
