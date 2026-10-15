@@ -45,37 +45,36 @@ A arquitetura foi extraída a partir da descompilação de `Secullum.PontoWeb.Se
 
 ```mermaid
 flowchart TD
-    subgraph Cloud["☁️ Secullum Cloud"]
-        AUTH["autenticador.secullum.com.br\n(OAuth2 Token & ListarBancos)"]
-        API["pontoweb.secullum.com.br\n(REST API /Equipamentos/v2, /Funcionarios, /TabelaTemporaria)"]
-        WS["pontowebcomunicacao.secullum.com.br\n(RealTime WSS Hub: Comunicacao)"]
+    subgraph Cloud ["Secullum Cloud"]
+        AUTH["autenticador.secullum.com.br - OAuth2 e Bancos"]
+        API["pontoweb.secullum.com.br - REST API PontoWeb"]
+        WS["pontowebcomunicacao.secullum.com.br - RealTime WSS"]
     end
 
-    subgraph Agent["💻 Secullum Standalone Agent (secullum-agent.exe)"]
-        AUTH_M["auth.js (OAuth2 Client)"]
-        PONTO_M["pontoweb.js (REST Client)"]
-        RT_M["realtime.js (WebSocket Hub)"]
-        DISP_M["protocols/dispatcher.js (Roteador de Protocolos)"]
-        BIO_M["biometric.js (Leitor USB & Captura)"]
-        DAEMON_M["daemon.js (Background Daemon)"]
+    subgraph Agent ["Agente Standalone (secullum-agent.exe)"]
+        AUTH_M["auth.js - Modulo OAuth2"]
+        PONTO_M["pontoweb.js - Modulo REST"]
+        RT_M["realtime.js - Modulo WebSocket SignalR"]
+        DISP_M["protocols/dispatcher.js - Roteador"]
+        BIO_M["biometric.js - Modulo USB Biometrico"]
+        DAEMON_M["daemon.js - Modulo Segundo Plano"]
     end
 
-    subgraph Hardware["🔌 Dispositivos Locais (LAN / USB)"]
-        HENRY["Henry Prisma / Hexa / SF 671\n(TCP 3000 - RSA 1024 + AES-128)"]
-        CID["Control iD iDClass / iDFace\n(HTTP 80 - FastCGI REST)"]
-        TOPDATA["Topdata Inner Rep / Plus\n(TCP BCD Modulo 256)"]
-        BIO_DEV["Leitor USB de Mesa\n(Suprema BioMini / Control iD iDBio)"]
+    subgraph Hardware ["Dispositivos Locais (LAN e USB)"]
+        HENRY["Henry Prisma, Hexa e SF 671 (TCP 3000)"]
+        CID["Control iD iDClass e iDFace (HTTP 80)"]
+        TOPDATA["Topdata Inner Rep e Plus (TCP)"]
+        BIO_DEV["Leitor Biometrico USB de Mesa"]
     end
 
-    AUTH_M -->|"POST /token (grant_type=password, client_id=3)"| AUTH
-    PONTO_M -->|"GET /Equipamentos/v2, GET /Funcionarios"| API
-    PONTO_M -->|"POST /TabelaTemporaria/false (Batidas AFD)"| API
-    RT_M -->|"WSS (Handshake JSON, Ping/Pong, Hub Events)"| WS
+    AUTH_M -->|POST /token e ListarBancos| AUTH
+    PONTO_M -->|GET /Equipamentos e POST /TabelaTemporaria| API
+    RT_M -->|WSS Handshake, Heartbeat e Eventos| WS
 
-    DISP_M -->|"Quadro STX/ETX + AES-128"| HENRY
-    DISP_M -->|"POST /login.fcgi, /load_objects.fcgi"| CID
-    DISP_M -->|"Quadro Binário BCD"| TOPDATA
-    BIO_M -->|"USB Direct / Drivers Nativo"| BIO_DEV
+    DISP_M -->|Quadro STX/ETX e Criptografia AES-128| HENRY
+    DISP_M -->|POST /login.fcgi e /load_objects.fcgi| CID
+    DISP_M -->|Quadro Binario BCD Modulo 256| TOPDATA
+    BIO_M -->|Acesso USB e Drivers Nativos| BIO_DEV
 ```
 
 ### Especificações Técnicas Reversas Descobertas:
