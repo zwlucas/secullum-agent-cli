@@ -387,6 +387,154 @@ async function getControlIdBiometrics(ip, port = 80, employees = [], login = 'ad
   }
 }
 
+/**
+ * Delete specified employees and their templates from a Control iD terminal.
+ * Discovered via REA in Secullum.Comunicacao.Classes.Equipamentos.ControliD.ControliDRepComunicacaoNativa.ExcluirColaboradores.
+ * @param {string} ip
+ * @param {number} [port=80]
+ * @param {Array<object|string>} [employees=[]]
+ * @param {string} [login="admin"]
+ * @param {string} [password="admin"]
+ * @param {function} [onProgress]
+ * @returns {Promise<{ ok: boolean, count: number, latencyMs: number, error?: string }>}
+ */
+async function deleteControlIdEmployees(ip, port = 80, employees = [], login = 'admin', password = 'admin', onProgress = null) {
+  if (!employees || employees.length === 0) return { ok: true, count: 0, latencyMs: 0 };
+  const start = Date.now();
+  const auth = await loginControlId(ip, port, login, password);
+  if (!auth.ok) {
+    return { ok: false, count: 0, latencyMs: Date.now() - start, error: auth.error };
+  }
+
+  try {
+    // 1. Load users from device to match internal user IDs
+    let deviceUsers = [];
+    try {
+      const res = await controlIdRequest(ip, port, `load_objects.fcgi?session=${auth.session}`, {
+        object: 'users',
+      });
+      deviceUsers = res.users || [];
+    } catch {}
+
+    // Match employee identifiers against device users
+    const matchedUserIds = [];
+    const targets = employees.map((emp) => {
+      if (typeof emp === 'object' && emp !== null) {
+        return {
+          cpf: emp.Cpf ? String(emp.Cpf).replace(/\D/g, '') : '',
+          pis: emp.NumeroPis ? String(emp.NumeroPis).replace(/\D/g, '') : '',
+          folha: emp.NumeroFolha ? String(emp.NumeroFolha).replace(/^0+/, '') : '',
+          ident: emp.NumeroIdentificador ? String(emp.NumeroIdentificador).replace(/^0+/, '') : '',
+          id: emp.Id ? String(emp.Id) : '',
+          name: emp.Nome ? String(emp.Nome).toLowerCase().trim() : '',
+        };
+      }
+      const raw = String(emp).trim();
+      return {
+        cpf: raw.replace(/\D/g, ''),
+        pis: raw.replace(/\D/g, ''),
+        folha: raw.replace(/^0+/, ''),
+        ident: raw.replace(/^0+/, ''),
+        id: raw,
+        name: raw.toLowerCase(),
+      };
+    });
+
+    for (const u of deviceUsers) {
+      const uCpf = String(u.cpf || '').replace(/\D/g, '');
+      const uReg = String(u.registration || '').replace(/^0+/, '');
+      const uId = String(u.id);
+      const uName = String(u.name || '').toLowerCase().trim();
+
+      const matched = targets.some((t) => {
+        if (t.cpf && uCpf && t.cpf === uCpf) return true;
+        if (t.folha && uReg && t.folha === uReg) return true;
+        if (t.ident && uReg && t.ident === uReg) return true;
+        if (t.id && uId && t.id === uId) return true;
+        if (t.name && uName && t.name === uName) return true;
+        return false;
+      });
+
+      if (matched) {
+        matchedUserIds.push(u.id);
+      }
+    }
+
+    if (matchedUserIds.length > 0) {
+      // 2. Destroy templates of matched users
+      try {
+        await controlIdRequest(ip, port, `destroy_objects.fcgi?session=${auth.session}`, {
+          object: 'templates',
+          where: {
+            templates: {
+              user_id: matchedUserIds,
+            },
+          },
+        });
+      } catch {}
+
+      // 3. Destroy users
+      try {
+        await controlIdRequest(ip, port, `destroy_objects.fcgi?session=${auth.session}`, {
+          object: 'users',
+          where: {
+            users: {
+              id: matchedUserIds,
+            },
+          },
+        });
+      } catch {
+        // Fallback to remove_users.fcgi
+        try {
+          await controlIdRequest(ip, port, `remove_users.fcgi?session=${auth.session}`, {
+            users: matchedUserIds.map((id) => ({ id })),
+          });
+        } catch {}
+      }
+    }
+
+    await logoutControlId(ip, port, auth.session);
+    return { ok: true, count: matchedUserIds.length, latencyMs: Date.now() - start };
+  } catch (err) {
+    await logoutControlId(ip, port, auth.session);
+    return { ok: false, count: 0, latencyMs: Date.now() - start, error: err.message };
+  }
+}
+
+/**
+ * Clear all employees and biometric templates from a Control iD terminal.
+ * @param {string} ip
+ * @param {number} [port=80]
+ * @param {string} [login="admin"]
+ * @param {string} [password="admin"]
+ * @returns {Promise<{ ok: boolean, latencyMs: number, error?: string }>}
+ */
+async function clearControlIdEmployees(ip, port = 80, login = 'admin', password = 'admin') {
+  const start = Date.now();
+  const auth = await loginControlId(ip, port, login, password);
+  if (!auth.ok) {
+    return { ok: false, latencyMs: Date.now() - start, error: auth.error };
+  }
+
+  try {
+    try {
+      await controlIdRequest(ip, port, `destroy_objects.fcgi?session=${auth.session}`, {
+        object: 'templates',
+      });
+    } catch {}
+
+    await controlIdRequest(ip, port, `destroy_objects.fcgi?session=${auth.session}`, {
+      object: 'users',
+    });
+
+    await logoutControlId(ip, port, auth.session);
+    return { ok: true, latencyMs: Date.now() - start };
+  } catch (err) {
+    await logoutControlId(ip, port, auth.session);
+    return { ok: false, latencyMs: Date.now() - start, error: err.message };
+  }
+}
+
 module.exports = {
   controlIdRequest,
   loginControlId,
@@ -395,6 +543,8 @@ module.exports = {
   syncControlIdDateTime,
   getControlIdLogs,
   sendControlIdEmployees,
+  deleteControlIdEmployees,
+  clearControlIdEmployees,
   sendControlIdEmployer,
   getControlIdEmployer,
   getControlIdBiometrics,

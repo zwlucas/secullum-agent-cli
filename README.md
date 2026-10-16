@@ -31,6 +31,7 @@ O projeto conecta-se diretamente à **Nuvem Secullum (PontoWeb Cloud)** e aos **
 - ☁️ **Comunicação Direta com Secullum Cloud:** OAuth2 nativo, API REST PontoWeb e WebSocket RealTime (SignalR / Hub `"Comunicacao"`).
 - 🕒 **Coleta Automática de Marcações (AFD / Batidas):** Coleta relatórios de batidas a partir do último NSR dos equipamentos (Portaria 1510 e Portaria 671) e realiza o envio automático para `POST /TabelaTemporaria/false`.
 - 👥 **Envio de Novos Funcionários ao REP:** Sincroniza colaboradores cadastrados na nuvem (`GET /Funcionarios`) para a memória interna dos relógios físicos.
+- 🗑️ **Exclusão de Funcionários da Memória (ApagarPessoas / ApagarListaPessoas):** Exclui colaboradores específicos ou limpa integralmente a lista de funcionários e suas respectivas biometrias na memória física do relógio (Henry e Control iD) via protocolo proprietário de hardware.
 - 🧬 **Puxar Digitais do Relógio para a Nuvem (ReceberDigitais):** Extrai impressões digitais cadastradas na memória dos REPs (Henry, Control iD) com decodificação de templates nativos e sincroniza diretamente com a Nuvem Secullum via SignalR Hub.
 - 🏢 **Envio e Consulta de Dados do Empregador:** Transmite e consulta Razão Social, CNPJ/CPF, CEI/CAEPF e Endereço nos REPs (Portaria 1510/671).
 - 🖐️ **Captura Ativa no Leitor USB de Mesa:** Suporte a Suprema BioMini, BioMini Adv, Control iD iDBio, LC/Futronic e Nitgen com gauge de qualidade e extração de template ANSI/ISO 378.
@@ -93,7 +94,7 @@ flowchart TD
    - Handshake Inicial: `{"AccessToken": "<jwt>", "Group": "<bancoId>", "ProtocolVersion": 19, "Headers": {}}`.
    - Registro do Agente: Invoca método `EstabelecerConexaoAgente` no Hub `"Comunicacao"` enviando nome da máquina, endereço MAC e lista de equipamentos.
    - Heartbeat: Servidor envia `{"HubName": "--PING--"}` e o cliente responde `{"HubName": "--PONG--"}`.
-   - Eventos de Nuvem Atendidos: `EnviarDataHora`, `ReceberRegistros`, `EnviarListaPessoas`, `ListarPessoas`, `CapturarDigital`, `EnviarEmpregador`, `ReceberEmpregador`, `ReceberDigitais`.
+   - Eventos de Nuvem Atendidos: `EnviarDataHora`, `ReceberRegistros`, `EnviarListaPessoas`, `ListarPessoas`, `CapturarDigital`, `EnviarEmpregador`, `ReceberEmpregador`, `ReceberDigitais`, `ApagarPessoas`, `ApagarListaPessoas`.
 
 ---
 
@@ -279,7 +280,24 @@ secullum-agent.exe equipment:get-biometrics 2
 
 ---
 
-### Passo 9: Sincronização de Data e Hora
+### Passo 9: Exclusão de Funcionários da Memória do REP (ApagarPessoas / ApagarListaPessoas)
+Permite apagar colaboradores específicos (informando CPF, PIS ou matrícula) ou limpar integralmente toda a lista de colaboradores e impressões digitais da memória física do relógio de ponto via protocolo proprietário de hardware:
+```bash
+# Excluir colaboradores específicos da memória do relógio #2:
+secullum-agent.exe equipment:delete-employees 2 08953185601 12345678900
+
+# Aliases equivalentes:
+secullum-agent.exe equipment:apagar-pessoas 2 08953185601
+secullum-agent.exe equipment:excluir-pessoas 2 08953185601
+
+# Limpar integralmente a memória de funcionários do relógio (ApagarListaPessoas):
+secullum-agent.exe equipment:clear-employees 2
+secullum-agent.exe equipment:apagar-todos 2
+```
+
+---
+
+### Passo 10: Sincronização de Data e Hora
 Ajusta o relógio interno do REP via protocolo proprietário nativo:
 ```bash
 secullum-agent.exe equipment:sync-time 3
@@ -287,7 +305,7 @@ secullum-agent.exe equipment:sync-time 3
 
 ---
 
-### Passo 10: Captura no Leitor Biométrico USB de Mesa
+### Passo 11: Captura no Leitor Biométrico USB de Mesa
 ```bash
 # 1. Escanear portas USB para detectar leitores conectados:
 secullum-agent.exe biometric:scan
@@ -301,7 +319,7 @@ secullum-agent.exe biometric:capture 13
 
 ---
 
-### Passo 11: Executar o Agente em Tempo Real (Foreground)
+### Passo 12: Executar o Agente em Tempo Real (Foreground)
 Conecta ao WebSocket da nuvem, processa requisições instantâneas e mantém a auto-coleta periódica a cada 60s:
 ```bash
 secullum-agent.exe connect
@@ -310,7 +328,7 @@ secullum-agent.exe connect
 
 ---
 
-### Passo 12: Executar em Segundo Plano (Daemon / Serviço)
+### Passo 13: Executar em Segundo Plano (Daemon / Serviço)
 Para servidores ou máquinas de produção onde o terminal não deve ficar aberto:
 ```bash
 # Iniciar o agente em processo silencioso desanexado:
@@ -328,7 +346,7 @@ secullum-agent.exe daemon:stop
 
 ---
 
-### Passo 13: Instalar como Serviço Persistente do Sistema Operacional
+### Passo 14: Instalar como Serviço Persistente do Sistema Operacional
 Configura a inicialização automática junto com o boot da máquina:
 - **No Windows:** Cria uma Tarefa Agendada do Windows (`SecullumAgentCLI`) em modo de privilégio máximo com inicialização no logon.
 - **No Linux:** Cria uma unidade `systemd` (`/etc/systemd/system/secullum-agent.service`) com auto-restart em caso de falha.
@@ -343,7 +361,7 @@ secullum-agent.exe daemon:uninstall
 
 ---
 
-### Passo 14: Painel de Monitoramento ao Vivo (Dashboard Visual)
+### Passo 15: Painel de Monitoramento ao Vivo (Dashboard Visual)
 Interface de monitoramento estilo terminal com atualização a cada 3 segundos:
 ```bash
 secullum-agent.exe monitor -i 3
@@ -363,8 +381,12 @@ O agente possui drivers nativos implementados a nível de socket TCP e HTTP:
   - `RH`: Consultar Data e Hora
   - `RS` / `RQ`: Status interno e contadores
   - `RR`: Receber Registros de Marcação (AFD)
-  - `EU` / `EE`: Enviar Colaboradores
-  - `ED`: Enviar Digitais
+  - `EU` / `EE`: Enviar Colaboradores (Inclusão: `I[`, Alteração: `A[`)
+  - `EU` / `EE` (Operação `E`): Exclusão de Colaboradores (`count]E[cleanDoc[nome[0[0[[`)
+  - `EU` / `EE` (Operação `L`): Limpeza Geral da Lista de Colaboradores (`1]L[`)
+  - `ED` (Operação `E`): Exclusão de Templates Biométricos (`33+ED+00+E]cleanRef`)
+  - `RD`: Receber Digitais Cadastradas
+  - `EE` / `RE`: Enviar e Receber Dados do Empregador
 - **Formatos AFD Suportados:** Portaria 1510 e Portaria 671 (com timezone `-0300`, CPF e CRC).
 
 ### 2. Control iD (iDClass, iDFace, iDAccess, iDFlex, 671)
@@ -373,6 +395,9 @@ O agente possui drivers nativos implementados a nível de socket TCP e HTTP:
 - **Sincronismo de Hora:** `POST /set_system_time.fcgi`.
 - **Coleta de Logs:** `POST /load_objects.fcgi` no objeto `access_logs`.
 - **Envio de Pessoas:** `POST /set_objects.fcgi` no objeto `users`.
+- **Exclusão de Pessoas:** `POST /destroy_objects.fcgi` nos objetos `users` e `templates` (com filtro de `id` ou limpeza geral). Fallback via `POST /remove_users.fcgi`.
+- **Recebimento de Biometrias:** `POST /load_objects.fcgi` no objeto `templates` cruzado com `users`.
+- **Empregador:** `POST /edit_company.fcgi` e `POST /load_company.fcgi`.
 
 ### 3. Topdata (Inner Rep, Inner Rep Plus, Inner 373, Inner Ponto 4)
 - **Quadro Binário BCD:** Delimitador `0x02`, payload compactado em BCD, soma de verificação em módulo 256 e delimitador `0x03`.
@@ -439,6 +464,8 @@ node scripts/build.js
 | `equipment:sync-time <id>` | Sincroniza a data e hora do relógio via protocolo nativo do fabricante. |
 | `equipment:collect <id>` | Coleta as marcações (AFD) a partir do último NSR e faz upload para a nuvem. |
 | `equipment:send-employees <id>` | Transmite os colaboradores cadastrados na nuvem para a memória do relógio. |
+| `equipment:delete-employees <id> [doc...]` | Exclui funcionários e suas respectivas biometrias da memória do relógio (ApagarPessoas). |
+| `equipment:clear-employees <id>` | Limpa integralmente a lista de colaboradores e biometrias da memória do relógio (ApagarListaPessoas). |
 | `equipment:send-employer <id>` | Transmite os dados do empregador (Razão Social, CNPJ/CPF, CEI) para o relógio. |
 | `equipment:get-employer <id>` | Consulta os dados do empregador gravados na memória do relógio de ponto. |
 | `equipment:receive-biometrics <id>` | Puxa as digitais do relógio e sincroniza com a nuvem (alias: `equipment:puxar-digitais`). |

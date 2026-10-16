@@ -21,6 +21,8 @@ const {
   syncEquipmentDateTime,
   collectEquipmentRecords,
   sendEquipmentEmployees,
+  deleteEquipmentEmployees,
+  clearEquipmentEmployees,
   sendEquipmentEmployer,
   receiveEquipmentEmployer,
   receiveEquipmentBiometrics,
@@ -625,6 +627,135 @@ async function equipmentReceiveBiometricsCommand(id) {
   console.log();
 }
 
+/**
+ * Delete specified employees and their biometrics from equipment memory (ApagarPessoas).
+ * Discovered via REA from Secullum.PontoWeb.ServicoComunicacao.Services.ComunicacaoService.ApagarPessoas.
+ * @param {string|number} id - Equipment ID
+ * @param {string[]} [employeeIdentifiers=[]] - Optional list of documents/IDs/folha to delete
+ */
+async function equipmentDeleteEmployeesCommand(id, employeeIdentifiers = []) {
+  if (!id) {
+    printError('ID do equipamento é obrigatório. Exemplo: secullum-agent-cli equipment:delete-employees 2 08953185601');
+    process.exit(1);
+  }
+
+  header(`Secullum Agent — Excluir Funcionários do Equipamento #${id}`);
+
+  let eq;
+  try {
+    process.stdout.write(`${colors.dim}Consultando equipamento #${id} no Secullum Cloud...${colors.reset}\r`);
+    const raw = await getEquipment(id);
+    eq = normalizeEquipment(raw);
+  } catch (err) {
+    printError(`Equipamento #${id} não encontrado na nuvem: ${err.message}`);
+    process.exit(1);
+  }
+
+  section('Equipamento Alvo');
+  keyValue('Nome', colors.bold(eq.descricao));
+  keyValue('Tipo / Modelo', eq.tipo);
+  keyValue('Endereço IP', `${eq.ip}:${eq.porta}`);
+
+  let targets = [];
+
+  if (employeeIdentifiers && employeeIdentifiers.length > 0) {
+    targets = employeeIdentifiers;
+    keyValue('Funcionários Solicitados', `${targets.length} identificador(es) para exclusão`);
+  } else {
+    process.stdout.write(`\n${colors.dim}Consultando funcionários cadastrados na nuvem...${colors.reset}\r`);
+    let cloudEmps = [];
+    try {
+      cloudEmps = await fetchEmployees();
+    } catch {}
+
+    if (cloudEmps.length > 0) {
+      info(`Nenhum identificador específico foi informado. ${cloudEmps.length} colaborador(es) encontrados na nuvem.`);
+      console.log(`\n${colors.yellow}Para excluir funcionários específicos da memória do relógio, informe os documentos:${colors.reset}`);
+      console.log(`  ${colors.bold(`secullum-agent-cli equipment:delete-employees ${id} <cpf_ou_pis_1> <cpf_ou_pis_2>...`)}`);
+      console.log(`\n${colors.yellow}Para limpar toda a memória de funcionários do relógio:${colors.reset}`);
+      console.log(`  ${colors.bold(`secullum-agent-cli equipment:clear-employees ${id}`)}\n`);
+      return;
+    } else {
+      printError('Nenhum identificador ou colaborador encontrado para exclusão.');
+      return;
+    }
+  }
+
+  section('Exclusão de Funcionários e Biometrias no REP');
+  process.stdout.write(`${colors.dim}Transmitindo comando de exclusão via protocolo do fabricante...${colors.reset}\n`);
+
+  let lastMsg = '';
+  const onProgress = (current, total, empName) => {
+    const pct = Math.round((current / total) * 100);
+    const msg = `[${pct}%] Excluindo ${current}/${total}: ${empName}`;
+    if (msg !== lastMsg) {
+      lastMsg = msg;
+      process.stdout.write(`\r${colors.cyan}${msg.padEnd(70)}${colors.reset}`);
+    }
+  };
+
+  const res = await deleteEquipmentEmployees(eq, targets, onProgress);
+  process.stdout.write('\r' + ' '.repeat(75) + '\r');
+
+  if (!res.ok) {
+    printError(`Falha ao excluir colaboradores no equipamento #${id}: ${res.error}`);
+    console.log();
+    return;
+  }
+
+  section('Resultado da Operação');
+  keyValue('Protocolo do Fabricante', res.manufacturer);
+  keyValue('Tempo de Resposta', `${res.latencyMs}ms`);
+  keyValue('Pessoas Removidas', colors.bold(String(res.count)));
+  success(`Exclusão concluída com sucesso! ${res.count} funcionário(s) e suas respectivas biometrias foram apagados da memória do equipamento.`);
+  console.log();
+}
+
+/**
+ * Clear all employees from equipment memory (ApagarListaPessoas / Limpar Memória).
+ * @param {string|number} id - Equipment ID
+ */
+async function equipmentClearEmployeesCommand(id) {
+  if (!id) {
+    printError('ID do equipamento é obrigatório. Exemplo: secullum-agent-cli equipment:clear-employees 2');
+    process.exit(1);
+  }
+
+  header(`Secullum Agent — Limpar Memória de Funcionários #${id}`);
+
+  let eq;
+  try {
+    process.stdout.write(`${colors.dim}Consultando equipamento #${id} no Secullum Cloud...${colors.reset}\r`);
+    const raw = await getEquipment(id);
+    eq = normalizeEquipment(raw);
+  } catch (err) {
+    printError(`Equipamento #${id} não encontrado na nuvem: ${err.message}`);
+    process.exit(1);
+  }
+
+  section('Equipamento Alvo');
+  keyValue('Nome', colors.bold(eq.descricao));
+  keyValue('Tipo / Modelo', eq.tipo);
+  keyValue('Endereço IP', `${eq.ip}:${eq.porta}`);
+
+  warn('ATENÇÃO: Esta operação removerá TODOS os funcionários e biometrias da memória física do equipamento!');
+  process.stdout.write(`\n${colors.dim}Enviando comando de limpeza geral...${colors.reset}\r`);
+
+  const res = await clearEquipmentEmployees(eq);
+
+  if (!res.ok) {
+    printError(`Falha ao limpar memória de funcionários do equipamento #${id}: ${res.error}`);
+    console.log();
+    return;
+  }
+
+  section('Resultado da Operação');
+  keyValue('Protocolo do Fabricante', res.manufacturer);
+  keyValue('Tempo de Resposta', `${res.latencyMs}ms`);
+  success(`Memória de funcionários do equipamento #${id} limpa com sucesso via protocolo ${res.manufacturer}!`);
+  console.log();
+}
+
 module.exports = {
   equipmentListCommand,
   equipmentAddCommand,
@@ -633,6 +764,8 @@ module.exports = {
   equipmentSyncTimeCommand,
   equipmentCollectCommand,
   equipmentSendEmployeesCommand,
+  equipmentDeleteEmployeesCommand,
+  equipmentClearEmployeesCommand,
   equipmentSendEmployerCommand,
   equipmentReceiveEmployerCommand,
   equipmentReceiveBiometricsCommand,

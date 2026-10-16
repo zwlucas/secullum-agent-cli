@@ -60,6 +60,8 @@ const {
   equipmentSyncTimeCommand,
   equipmentCollectCommand,
   equipmentSendEmployeesCommand,
+  equipmentDeleteEmployeesCommand,
+  equipmentClearEmployeesCommand,
   equipmentSendEmployerCommand,
   equipmentReceiveEmployerCommand,
   equipmentReceiveBiometricsCommand,
@@ -108,6 +110,8 @@ ${colors.bold('EQUIPMENT & MANUFACTURER PROTOCOLS:')}
   ${colors.green('equipment:sync-time <id>')} Direct clock sync via manufacturer protocol (Henry, Control iD, Topdata)
   ${colors.green('equipment:collect <id>')}   Collect punch records (AFD / Batidas) from REP and upload to cloud
   ${colors.green('equipment:send-employees <id>')} Transmit employee list from cloud to REP hardware
+  ${colors.green('equipment:delete-employees <id> [doc...]')} Delete employees & biometrics from REP memory (ApagarPessoas)
+  ${colors.green('equipment:clear-employees <id>')} Wipe all employee records from REP memory (ApagarListaPessoas)
   ${colors.green('equipment:send-employer <id>')}  Transmit employer data (DadosEmpregador) to REP hardware
   ${colors.green('equipment:get-employer <id>')}   Query employer data currently stored in REP hardware
   ${colors.green('equipment:receive-biometrics <id>')} Pull enrolled fingerprint templates from REP to cloud (ReceberDigitais)
@@ -265,6 +269,22 @@ async function main() {
     case 'equipment:enviar-pessoas':
     case 'equipment:funcionarios':
       await equipmentSendEmployeesCommand(extraArgs[0], extraArgs.slice(1));
+      break;
+
+    case 'equipment:delete-employees':
+    case 'equipment:delete-users':
+    case 'equipment:apagar-pessoas':
+    case 'equipment:excluir-pessoas':
+    case 'equipment:remover-pessoas':
+      await equipmentDeleteEmployeesCommand(extraArgs[0], extraArgs.slice(1));
+      break;
+
+    case 'equipment:clear-employees':
+    case 'equipment:clear-users':
+    case 'equipment:apagar-todos':
+    case 'equipment:limpar-pessoas':
+    case 'equipment:wipe-employees':
+      await equipmentClearEmployeesCommand(extraArgs[0]);
       break;
 
     case 'equipment:send-employer':

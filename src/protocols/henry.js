@@ -1039,6 +1039,208 @@ async function receiveHenryBiometrics(ip, port = 3000, employees = [], password 
   });
 }
 
+/**
+ * Delete specified employees and their enrolled biometric templates from a Henry REP clock.
+ * Discovered via REA from Secullum.Comunicacao.HenryRepComunicacao.ApagarPessoas and ApagarDigitais.
+ * Protocol:
+ *   - "EU" (Advanced) or "EE": count]E[cleanDoc[nome[0[0[[
+ *   - "ED": 33+ED+00+E]cleanRef (deletes enrolled fingerprint templates from biometric sensor)
+ * @param {string} ip
+ * @param {number} [port=3000]
+ * @param {Array<object|string>} [employees=[]]
+ * @param {string} [password=""]
+ * @param {function} [onProgress]
+ * @returns {Promise<{ ok: boolean, count: number, latencyMs: number, error?: string }>}
+ */
+async function deleteHenryEmployees(ip, port = 3000, employees = [], password = '', onProgress = null) {
+  if (!employees || employees.length === 0) return { ok: true, count: 0, latencyMs: 0 };
+  const start = Date.now();
+
+  return new Promise((resolve) => {
+    const sock = net.createConnection({ host: ip, port, timeout: 30000 });
+    let resolved = false;
+
+    const finish = (result) => {
+      if (!resolved) {
+        resolved = true;
+        sock.destroy();
+        resolve(result);
+      }
+    };
+
+    sock.on('timeout', () => finish({ ok: false, count: 0, latencyMs: Date.now() - start, error: 'Connection timeout' }));
+    sock.on('error', (err) => finish({ ok: false, count: 0, latencyMs: Date.now() - start, error: err.message }));
+
+    sock.on('connect', async () => {
+      try {
+        const exchange = (buf) =>
+          new Promise((res, rej) => {
+            let received = Buffer.alloc(0);
+            const onData = (data) => {
+              received = Buffer.concat([received, data]);
+              if (received.length >= 3) {
+                const pLen = received[1] | (received[2] << 8);
+                const expectedTotal = pLen + 5;
+                if (received.length >= expectedTotal) {
+                  sock.off('data', onData);
+                  sock.off('error', rej);
+                  res(received);
+                }
+              }
+            };
+            sock.on('data', onData);
+            sock.once('error', rej);
+            sock.write(buf);
+          });
+
+        let isAdvanced = false;
+        const probeResp = await exchange(buildHenryFrame('RH'));
+        const parsedProbe = parseHenryFrame(probeResp);
+
+        if (!parsedProbe.ok || parsedProbe.cmd !== 'RH' || password) {
+          const authRes = await authenticateHenrySession(sock, password);
+          if (authRes.ok) isAdvanced = true;
+        }
+
+        const cmdName = isAdvanced ? 'EU' : 'EE';
+        let deletedCount = 0;
+
+        // 1. Delete employees in batches of 10 using operation 'E'
+        const batchSize = 10;
+        for (let i = 0; i < employees.length; i += batchSize) {
+          const chunk = employees.slice(i, i + batchSize);
+
+          const itemsStr = chunk
+            .map((emp) => {
+              const doc = typeof emp === 'object'
+                ? (emp.Cpf ? emp.Cpf.replace(/\D/g, '') : (emp.NumeroPis || emp.NumeroIdentificador || emp.NumeroFolha || emp.Id))
+                : emp;
+              const cleanDoc = String(doc || '').replace(/\D/g, '').padStart(11, '0');
+              const nome = typeof emp === 'object' && emp.Nome ? String(emp.Nome).slice(0, 52).replace(/[\[\]]/g, '') : '';
+              return `E[${cleanDoc}[${nome}[0[0[[`;
+            })
+            .join(']');
+
+          const cmdStr = `33+${cmdName}+00+${chunk.length}]${itemsStr}`;
+
+          let respBuf;
+          if (isAdvanced) {
+            const enc = aesEncryptHenry(cmdStr, HEXA_CHAVE_AES);
+            respBuf = await exchange(frameRawPayload(enc));
+          } else {
+            respBuf = await exchange(buildHenryFrame(cmdName, `${chunk.length}]${itemsStr}`));
+          }
+
+          deletedCount += chunk.length;
+          await new Promise((r) => setTimeout(r, 40));
+        }
+
+        // 2. Wipe associated biometric templates from biometric module via 33+ED+00+E]ref
+        for (let j = 0; j < employees.length; j++) {
+          const emp = employees[j];
+          const rawRef = typeof emp === 'object'
+            ? (emp.NumeroIdentificador || emp.NumeroFolha || emp.Id || (emp.Cpf ? emp.Cpf.replace(/\D/g, '') : null) || emp.NumeroPis)
+            : emp;
+          const cleanRef = String(rawRef || '').replace(/^0+/, '') || '1';
+
+          if (typeof onProgress === 'function') {
+            const name = typeof emp === 'object' && emp.Nome ? emp.Nome : cleanRef;
+            onProgress(j + 1, employees.length, name);
+          }
+
+          const edCmd = `33+ED+00+E]${cleanRef}`;
+          if (isAdvanced) {
+            const enc = aesEncryptHenry(edCmd, HEXA_CHAVE_AES);
+            await exchange(frameRawPayload(enc));
+          } else {
+            await exchange(buildHenryFrame('ED', `E]${cleanRef}`));
+          }
+
+          await new Promise((r) => setTimeout(r, 40));
+        }
+
+        finish({ ok: true, count: deletedCount, latencyMs: Date.now() - start });
+      } catch (err) {
+        finish({ ok: false, count: 0, latencyMs: Date.now() - start, error: err.message });
+      }
+    });
+  });
+}
+
+/**
+ * Clear all employees from Henry REP memory.
+ * Sends "L[" (LimparLista) command.
+ * @param {string} ip
+ * @param {number} [port=3000]
+ * @param {string} [password=""]
+ * @returns {Promise<{ ok: boolean, latencyMs: number, error?: string }>}
+ */
+async function clearHenryEmployees(ip, port = 3000, password = '') {
+  const start = Date.now();
+  return new Promise((resolve) => {
+    const sock = net.createConnection({ host: ip, port, timeout: 15000 });
+    let resolved = false;
+
+    const finish = (result) => {
+      if (!resolved) {
+        resolved = true;
+        sock.destroy();
+        resolve(result);
+      }
+    };
+
+    sock.on('timeout', () => finish({ ok: false, latencyMs: Date.now() - start, error: 'Connection timeout' }));
+    sock.on('error', (err) => finish({ ok: false, latencyMs: Date.now() - start, error: err.message }));
+
+    sock.on('connect', async () => {
+      try {
+        const exchange = (buf) =>
+          new Promise((res, rej) => {
+            let received = Buffer.alloc(0);
+            const onData = (data) => {
+              received = Buffer.concat([received, data]);
+              if (received.length >= 3) {
+                const pLen = received[1] | (received[2] << 8);
+                const expectedTotal = pLen + 5;
+                if (received.length >= expectedTotal) {
+                  sock.off('data', onData);
+                  sock.off('error', rej);
+                  res(received);
+                }
+              }
+            };
+            sock.on('data', onData);
+            sock.once('error', rej);
+            sock.write(buf);
+          });
+
+        let isAdvanced = false;
+        const probeResp = await exchange(buildHenryFrame('RH'));
+        const parsedProbe = parseHenryFrame(probeResp);
+
+        if (!parsedProbe.ok || parsedProbe.cmd !== 'RH' || password) {
+          const authRes = await authenticateHenrySession(sock, password);
+          if (authRes.ok) isAdvanced = true;
+        }
+
+        const cmdName = isAdvanced ? 'EU' : 'EE';
+        const cmdStr = `33+${cmdName}+00+1]L[`;
+
+        if (isAdvanced) {
+          const enc = aesEncryptHenry(cmdStr, HEXA_CHAVE_AES);
+          await exchange(frameRawPayload(enc));
+        } else {
+          await exchange(buildHenryFrame(cmdName, '1]L['));
+        }
+
+        finish({ ok: true, latencyMs: Date.now() - start });
+      } catch (err) {
+        finish({ ok: false, latencyMs: Date.now() - start, error: err.message });
+      }
+    });
+  });
+}
+
 module.exports = {
   STX,
   ETX,
@@ -1054,6 +1256,8 @@ module.exports = {
   parseHenryAfdLine,
   collectHenryRecords,
   sendHenryEmployees,
+  deleteHenryEmployees,
+  clearHenryEmployees,
   sendHenryEmployer,
   receiveHenryEmployer,
   parseHenryBiometricResponse,

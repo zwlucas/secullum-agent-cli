@@ -266,12 +266,77 @@ async function receiveEquipmentBiometrics(eq, employees = [], onProgress = null)
   }
 }
 
+/**
+ * Delete specified employees from equipment using its manufacturer-specific protocol.
+ * Discovered via REA from Secullum.Comunicacao.IEquipamento.ApagarPessoas.
+ * @param {object} eq - Normalized equipment object
+ * @param {Array<object|string>} [employees=[]]
+ * @param {function} [onProgress]
+ * @returns {Promise<{ ok: boolean, count: number, manufacturer: string, latencyMs: number, error?: string }>}
+ */
+async function deleteEquipmentEmployees(eq, employees = [], onProgress = null) {
+  const family = getManufacturerFamily(eq.tipoId);
+  const ip = eq.ip;
+  const port = eq.porta;
+  const password = eq.senha || '';
+
+  if (!ip) {
+    return { ok: false, count: 0, manufacturer: family, latencyMs: 0, error: 'Equipment has no IP address configured' };
+  }
+
+  switch (family) {
+    case 'henry': {
+      const res = await henry.deleteHenryEmployees(ip, port, employees, password, onProgress);
+      return { ...res, manufacturer: 'Henry' };
+    }
+    case 'controlid': {
+      const res = await controlid.deleteControlIdEmployees(ip, port, employees, 'admin', password || 'admin', onProgress);
+      return { ...res, manufacturer: 'Control iD' };
+    }
+    default: {
+      return { ok: false, count: 0, manufacturer: 'Generic', latencyMs: 0, error: `Employee deletion for type #${eq.tipoId} not yet implemented` };
+    }
+  }
+}
+
+/**
+ * Clear all employees from equipment memory using its manufacturer-specific protocol.
+ * @param {object} eq - Normalized equipment object
+ * @returns {Promise<{ ok: boolean, manufacturer: string, latencyMs: number, error?: string }>}
+ */
+async function clearEquipmentEmployees(eq) {
+  const family = getManufacturerFamily(eq.tipoId);
+  const ip = eq.ip;
+  const port = eq.porta;
+  const password = eq.senha || '';
+
+  if (!ip) {
+    return { ok: false, manufacturer: family, latencyMs: 0, error: 'Equipment has no IP address configured' };
+  }
+
+  switch (family) {
+    case 'henry': {
+      const res = await henry.clearHenryEmployees(ip, port, password);
+      return { ...res, manufacturer: 'Henry' };
+    }
+    case 'controlid': {
+      const res = await controlid.clearControlIdEmployees(ip, port, 'admin', password || 'admin');
+      return { ...res, manufacturer: 'Control iD' };
+    }
+    default: {
+      return { ok: false, manufacturer: 'Generic', latencyMs: 0, error: `Employee wipe for type #${eq.tipoId} not yet implemented` };
+    }
+  }
+}
+
 module.exports = {
   getManufacturerFamily,
   syncEquipmentDateTime,
   queryEquipmentStatus,
   collectEquipmentRecords,
   sendEquipmentEmployees,
+  deleteEquipmentEmployees,
+  clearEquipmentEmployees,
   sendEquipmentEmployer,
   receiveEquipmentEmployer,
   receiveEquipmentBiometrics,

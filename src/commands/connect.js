@@ -14,6 +14,8 @@ const {
   syncEquipmentDateTime,
   collectEquipmentRecords,
   sendEquipmentEmployees,
+  deleteEquipmentEmployees,
+  clearEquipmentEmployees,
   sendEquipmentEmployer,
   receiveEquipmentEmployer,
   receiveEquipmentBiometrics,
@@ -343,6 +345,47 @@ async function connectCommand(args = []) {
           }
         } catch (err) {
           warn(`Erro ao receber digitais de #${equipId}: ${err.message}`);
+          gateway.sendHubMethod('Comunicacao', 'InformarTerminoComunicacao', [equipId, err.message]);
+          gateway.sendCommunicationProgress(equipId, `Erro: ${err.message}`, 0);
+        }
+      } else {
+        gateway.sendCommunicationProgress(equipId, 'Equipamento desconhecido', 0);
+      }
+    }
+
+    // 8. Delete employees request (ApagarPessoas / ApagarListaPessoas)
+    // Discovered via REA from Secullum.PontoWeb.ServicoComunicacao.Services.ComunicacaoService.ApagarPessoas and ApagarListaPessoas
+    if (evt.eventName === 'ApagarPessoas' || evt.eventName === 'ApagarListaPessoas') {
+      const equipId = evt.args[0];
+      const lista = evt.args[1] || [];
+      info(`Cloud requested employee deletion (${evt.eventName}) for equipment #${equipId}`);
+      const targetRaw = allEquipments.find((e) => Number(e.Id ?? e.id) === Number(equipId));
+      if (targetRaw) {
+        const targetEq = normalizeEquipment(targetRaw);
+        gateway.sendCommunicationProgress(equipId, 'Iniciando exclusão de funcionários no REP...', 20);
+        try {
+          let employees = lista;
+          if (!employees || employees.length === 0) {
+            employees = await fetchEmployees();
+          }
+
+          gateway.sendCommunicationProgress(equipId, `Apagando ${employees.length} funcionário(s) da memória do relógio...`, 40);
+          const res = await deleteEquipmentEmployees(targetEq, employees, (curr, tot, name) => {
+            const pct = 40 + Math.round((curr / tot) * 50);
+            gateway.sendCommunicationProgress(equipId, `Excluindo ${curr}/${tot}: ${name}`, pct);
+          });
+
+          if (res.ok) {
+            success(`Exclusão concluída com sucesso em #${equipId}: ${res.count} pessoa(s) removida(s)`);
+            gateway.sendHubMethod('Comunicacao', 'InformarTerminoComunicacao', [equipId, '']);
+            gateway.sendCommunicationProgress(equipId, `${res.count} pessoa(s) apagada(s) com sucesso`, 100);
+          } else {
+            warn(`Falha ao apagar pessoas de #${equipId}: ${res.error}`);
+            gateway.sendHubMethod('Comunicacao', 'InformarTerminoComunicacao', [equipId, res.error || 'Falha na exclusão']);
+            gateway.sendCommunicationProgress(equipId, `Falha: ${res.error}`, 0);
+          }
+        } catch (err) {
+          warn(`Erro ao apagar pessoas de #${equipId}: ${err.message}`);
           gateway.sendHubMethod('Comunicacao', 'InformarTerminoComunicacao', [equipId, err.message]);
           gateway.sendCommunicationProgress(equipId, `Erro: ${err.message}`, 0);
         }
