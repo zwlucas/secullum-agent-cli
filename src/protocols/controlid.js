@@ -535,6 +535,67 @@ async function clearControlIdEmployees(ip, port = 80, login = 'admin', password 
   }
 }
 
+/**
+ * Query paper roll sensor status (EstadoBobina) from a Control iD terminal.
+ * Discovered via REA from Secullum.Comunicacao.Classes.Equipamentos.ControliD.ControliDRepComunicacaoNativa.ReceberStatusBobina.
+ * @param {string} ip
+ * @param {number} [port=80]
+ * @param {string} [login="admin"]
+ * @param {string} [password="admin"]
+ * @returns {Promise<{ ok: boolean, status: string, paperOk: boolean, lowPaper: boolean, remainingMeters?: number, cuts?: number, description: string, latencyMs: number, error?: string }>}
+ */
+async function getControlIdPaperRollStatus(ip, port = 80, login = 'admin', password = 'admin') {
+  const start = Date.now();
+  const auth = await loginControlId(ip, port, login, password);
+  if (!auth.ok) {
+    return { ok: false, status: 'Desconhecido', paperOk: false, lowPaper: false, description: 'Falha na autenticação', latencyMs: Date.now() - start, error: auth.error };
+  }
+
+  try {
+    const info = await controlIdRequest(ip, port, `system_information.fcgi?session=${auth.session}`);
+    await logoutControlId(ip, port, auth.session);
+
+    const paperOk = info.paper_ok === undefined ? true : (info.paper_ok === true || info.paper_ok === 1 || String(info.paper_ok).toLowerCase() === 'ok');
+    const lowPaper = info.low_paper === undefined ? false : (info.low_paper === true || info.low_paper === 1 || String(info.low_paper).toLowerCase() === 'sim');
+    const remainingMeters = info.coil_paper !== undefined ? Number(info.coil_paper) : null;
+    const cuts = info.cuts !== undefined ? Number(info.cuts) : null;
+
+    let status = 'Normal';
+    let description = 'Bobina em estado normal';
+
+    if (!paperOk) {
+      status = 'Sem Papel';
+      description = 'Sensor indica ausência de papel (bloqueio de impressão)';
+    } else if (lowPaper) {
+      status = 'Pouco Papel';
+      description = remainingMeters !== null
+        ? `Pouco Papel - ${remainingMeters} m. restantes`
+        : 'Pouco Papel - Troca necessária em breve';
+    } else {
+      status = 'Normal';
+      if (remainingMeters !== null && cuts !== null) {
+        description = `Normal - ${remainingMeters} m. restantes (${cuts} cortes)`;
+      } else if (remainingMeters !== null) {
+        description = `Normal - ${remainingMeters} m. restantes`;
+      }
+    }
+
+    return {
+      ok: true,
+      status,
+      paperOk,
+      lowPaper,
+      remainingMeters,
+      cuts,
+      description,
+      latencyMs: Date.now() - start,
+    };
+  } catch (err) {
+    await logoutControlId(ip, port, auth.session);
+    return { ok: false, status: 'Erro', paperOk: false, lowPaper: false, description: `Erro na leitura: ${err.message}`, latencyMs: Date.now() - start, error: err.message };
+  }
+}
+
 module.exports = {
   controlIdRequest,
   loginControlId,
@@ -548,5 +609,6 @@ module.exports = {
   sendControlIdEmployer,
   getControlIdEmployer,
   getControlIdBiometrics,
+  getControlIdPaperRollStatus,
 };
 

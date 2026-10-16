@@ -34,10 +34,11 @@ O projeto conecta-se diretamente à **Nuvem Secullum (PontoWeb Cloud)** e aos **
 - 🗑️ **Exclusão de Funcionários da Memória (ApagarPessoas / ApagarListaPessoas):** Exclui colaboradores específicos ou limpa integralmente a lista de funcionários e suas respectivas biometrias na memória física do relógio (Henry e Control iD) via protocolo proprietário de hardware.
 - 🧬 **Puxar Digitais do Relógio para a Nuvem (ReceberDigitais):** Extrai impressões digitais cadastradas na memória dos REPs (Henry, Control iD) com decodificação de templates nativos e sincroniza diretamente com a Nuvem Secullum via SignalR Hub.
 - 🏢 **Envio e Consulta de Dados do Empregador:** Transmite e consulta Razão Social, CNPJ/CPF, CEI/CAEPF e Endereço nos REPs (Portaria 1510/671).
+- 🧻 **Telemetria do Sensor de Bobina de Papel (EstadoBobina):** Monitora em tempo real o status da bobina de papel térmica dos relógios físicos (Henry e Control iD), reportando estados de *Normal*, *Pouco Papel* (com metragem restante e total de cortes) e *Sem Papel* (bloqueio de impressão) diretamente para a Nuvem Secullum via SignalR Hub (`InformarStatusBobina`).
 - 🖐️ **Captura Ativa no Leitor USB de Mesa:** Suporte a Suprema BioMini, BioMini Adv, Control iD iDBio, LC/Futronic e Nitgen com gauge de qualidade e extração de template ANSI/ISO 378.
 - ⏱️ **Sincronização de Data e Hora em Hardware:** Ajuste de relógio em microssegundos com protocolos criptografados nativos (Henry, Control iD, Topdata).
 - 🔍 **Sondagem de Rede em Tempo Real:** Medição de latência e detecção de status LAN via sockets TCP puros.
-- 🔄 **Daemonização Silenciosa:** Opera em segundo plano como serviço ou daemon com auto-coleta contínua a cada 60s e reconexão automática.
+- 🔄 **Daemonização Silenciosa:** Opera em segundo plano como serviço ou daemon com auto-coleta contínua a cada 60s, monitoramento contínuo de bobina e reconexão automática.
 - 🖥️ **Monitor Dashboard ao Vivo:** Interface estilo terminal que replica visualmente o painel oficial Electron.
 
 ---
@@ -92,9 +93,10 @@ flowchart TD
    - `/TabelaTemporaria/false`: Inserção direta de marcações AFD (`List<DadosRegistroOffline>`).
 3. **Gateway RealTime WebSocket (`wss://pontowebcomunicacao.secullum.com.br/`):**
    - Handshake Inicial: `{"AccessToken": "<jwt>", "Group": "<bancoId>", "ProtocolVersion": 19, "Headers": {}}`.
-   - Registro do Agente: Invoca método `EstabelecerConexaoAgente` no Hub `"Comunicacao"` enviando nome da máquina, endereço MAC e lista de equipamentos.
+   - Registro do Agente: Invoca método `EstabelecerConexaoAgente` no Hub `"Comunicacao"` enviando nome da máquina, endereço MAC, lista de equipamentos e mapeamento `StatusBobina`.
    - Heartbeat: Servidor envia `{"HubName": "--PING--"}` e o cliente responde `{"HubName": "--PONG--"}`.
-   - Eventos de Nuvem Atendidos: `EnviarDataHora`, `ReceberRegistros`, `EnviarListaPessoas`, `ListarPessoas`, `CapturarDigital`, `EnviarEmpregador`, `ReceberEmpregador`, `ReceberDigitais`, `ApagarPessoas`, `ApagarListaPessoas`.
+   - Eventos de Nuvem Atendidos: `EnviarDataHora`, `ReceberRegistros`, `EnviarListaPessoas`, `ListarPessoas`, `CapturarDigital`, `EnviarEmpregador`, `ReceberEmpregador`, `ReceberDigitais`, `ApagarPessoas`, `ApagarListaPessoas`, `ConsultarStatusBobina` e `StatusBobina`.
+   - Telemetria de Retorno: `InformarStatusBobina([equipId, status])` no Hub `"Comunicacao"`.
 
 ---
 
@@ -297,7 +299,23 @@ secullum-agent.exe equipment:apagar-todos 2
 
 ---
 
-### Passo 10: Sincronização de Data e Hora
+### Passo 10: Telemetria do Sensor de Bobina de Papel (EstadoBobina)
+Consulta o sensor físico da bobina de papel térmica do relógio de ponto via protocolo nativo do fabricante (Henry e Control iD) e diagnostica se o equipamento está operando normalmente, com pouco papel ou sem papel (bloqueio de impressão):
+```bash
+# Consultar telemetria do sensor de bobina do equipamento #2:
+secullum-agent.exe equipment:paper-roll 2
+
+# Aliases equivalentes:
+secullum-agent.exe equipment:bobina 2
+secullum-agent.exe equipment:estado-bobina 2
+```
+
+> [!NOTE]
+> Durante a execução do comando `connect` ou em segundo plano (`daemon:start`), o agente monitora continuamente os sensores de bobina de todos os equipamentos ativos a cada 60 segundos e notifica a Nuvem Secullum instantaneamente via SignalR Hub (`InformarStatusBobina`).
+
+---
+
+### Passo 11: Sincronização de Data e Hora
 Ajusta o relógio interno do REP via protocolo proprietário nativo:
 ```bash
 secullum-agent.exe equipment:sync-time 3
@@ -305,7 +323,7 @@ secullum-agent.exe equipment:sync-time 3
 
 ---
 
-### Passo 11: Captura no Leitor Biométrico USB de Mesa
+### Passo 12: Captura no Leitor Biométrico USB de Mesa
 ```bash
 # 1. Escanear portas USB para detectar leitores conectados:
 secullum-agent.exe biometric:scan
@@ -319,7 +337,7 @@ secullum-agent.exe biometric:capture 13
 
 ---
 
-### Passo 12: Executar o Agente em Tempo Real (Foreground)
+### Passo 13: Executar o Agente em Tempo Real (Foreground)
 Conecta ao WebSocket da nuvem, processa requisições instantâneas e mantém a auto-coleta periódica a cada 60s:
 ```bash
 secullum-agent.exe connect
@@ -328,7 +346,7 @@ secullum-agent.exe connect
 
 ---
 
-### Passo 13: Executar em Segundo Plano (Daemon / Serviço)
+### Passo 14: Executar em Segundo Plano (Daemon / Serviço)
 Para servidores ou máquinas de produção onde o terminal não deve ficar aberto:
 ```bash
 # Iniciar o agente em processo silencioso desanexado:
@@ -346,7 +364,7 @@ secullum-agent.exe daemon:stop
 
 ---
 
-### Passo 14: Instalar como Serviço Persistente do Sistema Operacional
+### Passo 15: Instalar como Serviço Persistente do Sistema Operacional
 Configura a inicialização automática junto com o boot da máquina:
 - **No Windows:** Cria uma Tarefa Agendada do Windows (`SecullumAgentCLI`) em modo de privilégio máximo com inicialização no logon.
 - **No Linux:** Cria uma unidade `systemd` (`/etc/systemd/system/secullum-agent.service`) com auto-restart em caso de falha.
@@ -361,7 +379,7 @@ secullum-agent.exe daemon:uninstall
 
 ---
 
-### Passo 15: Painel de Monitoramento ao Vivo (Dashboard Visual)
+### Passo 16: Painel de Monitoramento ao Vivo (Dashboard Visual)
 Interface de monitoramento estilo terminal com atualização a cada 3 segundos:
 ```bash
 secullum-agent.exe monitor -i 3
@@ -379,7 +397,7 @@ O agente possui drivers nativos implementados a nível de socket TCP e HTTP:
 - **Comandos Homologados:**
   - `EH`: Enviar Data e Hora
   - `RH`: Consultar Data e Hora
-  - `RS` / `RQ`: Status interno e contadores
+  - `RS` / `RQ`: Status interno e contadores (incluindo parâmetros `SP`: Sem Papel, `PP`: Pouco Papel e `QP`: Quantidade de Tickets)
   - `RR`: Receber Registros de Marcação (AFD)
   - `EU` / `EE`: Enviar Colaboradores (Inclusão: `I[`, Alteração: `A[`)
   - `EU` / `EE` (Operação `E`): Exclusão de Colaboradores (`count]E[cleanDoc[nome[0[0[[`)
@@ -398,6 +416,7 @@ O agente possui drivers nativos implementados a nível de socket TCP e HTTP:
 - **Exclusão de Pessoas:** `POST /destroy_objects.fcgi` nos objetos `users` e `templates` (com filtro de `id` ou limpeza geral). Fallback via `POST /remove_users.fcgi`.
 - **Recebimento de Biometrias:** `POST /load_objects.fcgi` no objeto `templates` cruzado com `users`.
 - **Empregador:** `POST /edit_company.fcgi` e `POST /load_company.fcgi`.
+- **Telemetria de Bobina:** `POST /system_information.fcgi` (leitura de `paper_ok`, `low_paper`, `coil_paper` em metros e `cuts`).
 
 ### 3. Topdata (Inner Rep, Inner Rep Plus, Inner 373, Inner Ponto 4)
 - **Quadro Binário BCD:** Delimitador `0x02`, payload compactado em BCD, soma de verificação em módulo 256 e delimitador `0x03`.
@@ -469,6 +488,7 @@ node scripts/build.js
 | `equipment:send-employer <id>` | Transmite os dados do empregador (Razão Social, CNPJ/CPF, CEI) para o relógio. |
 | `equipment:get-employer <id>` | Consulta os dados do empregador gravados na memória do relógio de ponto. |
 | `equipment:receive-biometrics <id>` | Puxa as digitais do relógio e sincroniza com a nuvem (alias: `equipment:puxar-digitais`). |
+| `equipment:paper-roll <id>` | Consulta a telemetria do sensor de bobina de papel (EstadoBobina: Normal/Pouco Papel/Sem Papel) do relógio (aliases: `equipment:bobina`, `equipment:estado-bobina`). |
 | `biometric` | Exibe o status e leitor biométrico de mesa ativo. |
 | `biometric:scan` | Escaneia portas USB em busca de leitores de mesa homologados. |
 | `biometric:select <id>` | Define o leitor biométrico ativo (-1, 0, 9, 16, 2, 3). |

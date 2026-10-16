@@ -26,6 +26,7 @@ const {
   sendEquipmentEmployer,
   receiveEquipmentEmployer,
   receiveEquipmentBiometrics,
+  queryEquipmentPaperRoll,
 } = require('../protocols/dispatcher');
 const {
   colors,
@@ -756,6 +757,80 @@ async function equipmentClearEmployeesCommand(id) {
   console.log();
 }
 
+/**
+ * Query paper roll sensor status (EstadoBobina) from equipment.
+ * Discovered via REA from Secullum.Comunicacao.IEquipamentoRep.EstadoBobina.
+ * @param {string|number} id - Equipment ID
+ */
+async function equipmentPaperRollCommand(id) {
+  if (!id) {
+    printError('ID do equipamento é obrigatório. Exemplo: secullum-agent-cli equipment:paper-roll 2');
+    process.exit(1);
+  }
+
+  header(`Secullum Agent — Telemetria do Sensor de Bobina #${id}`);
+
+  let eq;
+  try {
+    process.stdout.write(`${colors.dim}Consultando equipamento #${id} no Secullum Cloud...${colors.reset}\r`);
+    const raw = await getEquipment(id);
+    eq = normalizeEquipment(raw);
+  } catch (err) {
+    printError(`Equipamento #${id} não encontrado na nuvem: ${err.message}`);
+    process.exit(1);
+  }
+
+  section('Equipamento Alvo');
+  keyValue('Nome', colors.bold(eq.descricao));
+  keyValue('Tipo / Modelo', eq.tipo);
+  keyValue('Endereço IP', `${eq.ip}:${eq.porta}`);
+
+  process.stdout.write(`\n${colors.dim}Consultando sensor de bobina no relógio via protocolo nativo...${colors.reset}\r`);
+
+  const res = await queryEquipmentPaperRoll(eq);
+
+  section('Telemetria do Sensor de Bobina (EstadoBobina)');
+  keyValue('Protocolo do Fabricante', res.manufacturer);
+  keyValue('Tempo de Resposta', `${res.latencyMs}ms`);
+
+  let statusFormatted;
+  if (res.status === 'Normal') {
+    statusFormatted = `${colors.green}${symbols.check} Normal${colors.reset}`;
+  } else if (res.status === 'Pouco Papel') {
+    statusFormatted = `${colors.yellow}▲ Pouco Papel${colors.reset}`;
+  } else if (res.status === 'Sem Papel') {
+    statusFormatted = `${colors.red}${symbols.cross} Sem Papel (Bloqueio de Impressão)${colors.reset}`;
+  } else {
+    statusFormatted = `${colors.red}${res.status || 'Desconhecido'}${colors.reset}`;
+  }
+
+  keyValue('Estado do Sensor', statusFormatted);
+  keyValue('Diagnóstico', res.description || '-');
+
+  if (res.remainingMeters !== undefined && res.remainingMeters !== null) {
+    keyValue('Metragem Restante', `${res.remainingMeters} m`);
+  }
+  if (res.cuts !== undefined && res.cuts !== null) {
+    keyValue('Total de Cortes', String(res.cuts));
+  }
+
+  console.log();
+  if (res.ok) {
+    if (res.status === 'Normal') {
+      success('Sensor de bobina de papel operando normalmente.');
+    } else if (res.status === 'Pouco Papel') {
+      warn('Atenção: A bobina de papel está próxima do fim. Recomenda-se substituição preventiva.');
+    } else if (res.status === 'Sem Papel') {
+      printError('Crítico: Equipamento sem papel! O registro de ponto com comprovante impresso pode estar bloqueado.');
+    } else {
+      info(`Status reportado pelo equipamento: ${res.status}`);
+    }
+  } else {
+    printError(`Falha ao consultar sensor de bobina no equipamento #${id}: ${res.error || res.description}`);
+  }
+  console.log();
+}
+
 module.exports = {
   equipmentListCommand,
   equipmentAddCommand,
@@ -769,5 +844,6 @@ module.exports = {
   equipmentSendEmployerCommand,
   equipmentReceiveEmployerCommand,
   equipmentReceiveBiometricsCommand,
+  equipmentPaperRollCommand,
 };
 

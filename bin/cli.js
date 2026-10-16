@@ -65,6 +65,7 @@ const {
   equipmentSendEmployerCommand,
   equipmentReceiveEmployerCommand,
   equipmentReceiveBiometricsCommand,
+  equipmentPaperRollCommand,
 } = require('../src/commands/equipment');
 const { connectCommand } = require('../src/commands/connect');
 const { monitorCommand } = require('../src/commands/monitor');
@@ -115,6 +116,7 @@ ${colors.bold('EQUIPMENT & MANUFACTURER PROTOCOLS:')}
   ${colors.green('equipment:send-employer <id>')}  Transmit employer data (DadosEmpregador) to REP hardware
   ${colors.green('equipment:get-employer <id>')}   Query employer data currently stored in REP hardware
   ${colors.green('equipment:receive-biometrics <id>')} Pull enrolled fingerprint templates from REP to cloud (ReceberDigitais)
+  ${colors.green('equipment:paper-roll <id>')}    Check paper roll sensor telemetry (EstadoBobina: Normal/Pouco Papel/Sem Papel)
 
 ${colors.bold('DESKTOP USB BIOMETRIC READERS:')}
   ${colors.green('biometric')}                Show active biometric reader and hardware connection
@@ -306,6 +308,14 @@ async function main() {
     case 'equipment:receber-digitais':
     case 'equipment:biometrics':
       await equipmentReceiveBiometricsCommand(extraArgs[0]);
+      break;
+
+    case 'equipment:paper-roll':
+    case 'equipment:paper':
+    case 'equipment:bobina':
+    case 'equipment:estado-bobina':
+    case 'equipment:status-bobina':
+      await equipmentPaperRollCommand(extraArgs[0]);
       break;
 
     case 'biometric':

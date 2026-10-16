@@ -19,6 +19,7 @@ const {
   sendEquipmentEmployer,
   receiveEquipmentEmployer,
   receiveEquipmentBiometrics,
+  queryEquipmentPaperRoll,
 } = require('../protocols/dispatcher');
 const { probeTcp } = require('../probe');
 const { captureBiometric } = require('../biometric');
@@ -126,6 +127,23 @@ async function connectCommand(args = []) {
                 console.log(`  ${colors.yellow}Falha ao subir para Secullum Cloud: ${upErr.message}${colors.reset}`);
               }
             }
+
+            // Paper roll sensor telemetry (EstadoBobina)
+            try {
+              const paper = await queryEquipmentPaperRoll(eq);
+              if (paper.ok && eq.lastPaperStatus !== paper.status) {
+                eq.lastPaperStatus = paper.status;
+                gateway.sendHubMethod('Comunicacao', 'InformarStatusBobina', [eq.id, paper.status]);
+                const timeStr = new Date().toLocaleTimeString();
+                if (paper.status === 'Sem Papel') {
+                  console.log(`\n${colors.bold(colors.red(`[${timeStr}] [Sensor Bobina] Equipamento #${eq.id} (${eq.descricao}): ${paper.description} ${symbols.cross}`))}`);
+                } else if (paper.status === 'Pouco Papel') {
+                  console.log(`\n${colors.bold(colors.yellow(`[${timeStr}] [Sensor Bobina] Equipamento #${eq.id} (${eq.descricao}): ${paper.description} ⚠️`))}`);
+                } else {
+                  console.log(`  ${colors.dim}[${timeStr}] [Sensor Bobina] Equipamento #${eq.id} (${eq.descricao}): Bobina Normal (${paper.latencyMs}ms)${colors.reset}`);
+                }
+              }
+            } catch {}
           }
         } catch {} finally {
           isPolling = false;
@@ -386,6 +404,31 @@ async function connectCommand(args = []) {
           }
         } catch (err) {
           warn(`Erro ao apagar pessoas de #${equipId}: ${err.message}`);
+          gateway.sendHubMethod('Comunicacao', 'InformarTerminoComunicacao', [equipId, err.message]);
+          gateway.sendCommunicationProgress(equipId, `Erro: ${err.message}`, 0);
+        }
+      } else {
+        gateway.sendCommunicationProgress(equipId, 'Equipamento desconhecido', 0);
+      }
+    }
+
+    // 9. Paper roll sensor telemetry request (ConsultarStatusBobina / StatusBobina)
+    // Discovered via REA from Secullum.PontoWeb.ServicoComunicacao.Services.ComunicacaoService.GerenciamentoComunicacao_EstadoBobina
+    if (evt.eventName === 'ConsultarStatusBobina' || evt.eventName === 'VerificarStatusBobina' || evt.eventName === 'StatusBobina') {
+      const equipId = evt.args[0];
+      info(`Cloud requested paper roll sensor status for equipment #${equipId}`);
+      const targetRaw = allEquipments.find((e) => Number(e.Id ?? e.id) === Number(equipId));
+      if (targetRaw) {
+        const targetEq = normalizeEquipment(targetRaw);
+        gateway.sendCommunicationProgress(equipId, 'Consultando sensor de bobina no relógio...', 50);
+        try {
+          const paper = await queryEquipmentPaperRoll(targetEq);
+          gateway.sendHubMethod('Comunicacao', 'InformarStatusBobina', [equipId, paper.status]);
+          gateway.sendHubMethod('Comunicacao', 'InformarTerminoComunicacao', [equipId, '']);
+          gateway.sendCommunicationProgress(equipId, `Sensor de bobina: ${paper.status}`, 100);
+          success(`Status da bobina enviado para #${equipId}: ${paper.description}`);
+        } catch (err) {
+          warn(`Erro ao consultar bobina de #${equipId}: ${err.message}`);
           gateway.sendHubMethod('Comunicacao', 'InformarTerminoComunicacao', [equipId, err.message]);
           gateway.sendCommunicationProgress(equipId, `Erro: ${err.message}`, 0);
         }

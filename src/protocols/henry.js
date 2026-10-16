@@ -1241,6 +1241,150 @@ async function clearHenryEmployees(ip, port = 3000, password = '') {
   });
 }
 
+/**
+ * Query paper roll sensor status (EstadoBobina) from a Henry REP clock.
+ * Discovered via REA from Secullum.Comunicacao.HenryRepComunicacao.VerificarStatusBobina.
+ * Queries parameters "SP" (Sem Papel), "PP" (Pouco Papel) and "QP" (Quantidade Papel/Tickets).
+ * @param {string} ip
+ * @param {number} [port=3000]
+ * @param {string} [password=""]
+ * @returns {Promise<{ ok: boolean, status: string, paperOk: boolean, lowPaper: boolean, description: string, latencyMs: number, error?: string }>}
+ */
+async function getHenryPaperRollStatus(ip, port = 3000, password = '') {
+  const start = Date.now();
+  return new Promise((resolve) => {
+    const sock = net.createConnection({ host: ip, port, timeout: 8000 });
+    let resolved = false;
+
+    const finish = (result) => {
+      if (!resolved) {
+        resolved = true;
+        sock.destroy();
+        resolve(result);
+      }
+    };
+
+    sock.on('timeout', () => finish({ ok: false, status: 'Desconhecido', paperOk: false, lowPaper: false, description: 'Timeout de conexão', latencyMs: Date.now() - start, error: 'Connection timeout' }));
+    sock.on('error', (err) => finish({ ok: false, status: 'Erro', paperOk: false, lowPaper: false, description: `Erro de rede: ${err.message}`, latencyMs: Date.now() - start, error: err.message }));
+
+    sock.on('connect', async () => {
+      try {
+        const exchange = (buf) =>
+          new Promise((res, rej) => {
+            let received = Buffer.alloc(0);
+            const onData = (data) => {
+              received = Buffer.concat([received, data]);
+              if (received.length >= 3) {
+                const pLen = received[1] | (received[2] << 8);
+                const expectedTotal = pLen + 5;
+                if (received.length >= expectedTotal) {
+                  sock.off('data', onData);
+                  sock.off('error', rej);
+                  res(received);
+                }
+              }
+            };
+            sock.on('data', onData);
+            sock.once('error', rej);
+            sock.write(buf);
+          });
+
+        let isAdvanced = false;
+        const probeResp = await exchange(buildHenryFrame('RH'));
+        const parsedProbe = parseHenryFrame(probeResp);
+
+        if (!parsedProbe.ok || parsedProbe.cmd !== 'RH' || password) {
+          const authRes = await authenticateHenrySession(sock, password);
+          if (authRes.ok) isAdvanced = true;
+        }
+
+        // Query status helper
+        const queryStatusParam = async (param) => {
+          const cmdName = isAdvanced ? 'RQ' : 'RS';
+          const cmdStr = `33+${cmdName}+00+${param}`;
+          let respBuf;
+
+          if (isAdvanced) {
+            const enc = aesEncryptHenry(cmdStr, HEXA_CHAVE_AES);
+            respBuf = await exchange(frameRawPayload(enc));
+            const pLen = respBuf[1] | (respBuf[2] << 8);
+            const dec = aesDecryptHenry(respBuf.subarray(3, 3 + pLen), HEXA_CHAVE_AES);
+            return dec.toString('ascii');
+          } else {
+            respBuf = await exchange(buildHenryFrame(cmdName, param));
+            return parseHenryFrame(respBuf).payload;
+          }
+        };
+
+        // 1. Query "SP" (Sem Papel)
+        let respSP = '';
+        try {
+          respSP = await queryStatusParam('SP');
+        } catch {}
+
+        await new Promise((r) => setTimeout(r, 40));
+
+        // 2. Query "PP" (Pouco Papel)
+        let respPP = '';
+        try {
+          respPP = await queryStatusParam('PP');
+        } catch {}
+
+        // Evaluate sensor flags:
+        // Active indicator in Henry is 'A' (Ativo), 'B' (Bloqueado), or '1'
+        const isSemPapel = respSP.includes('+A') || respSP.includes(']A') || respSP.includes('+B') || respSP.includes(']B');
+        const isPoucoPapel = respPP.includes('+A') || respPP.includes(']A') || respPP.includes('+B') || respPP.includes(']B');
+
+        let status = 'Normal';
+        let description = 'Bobina em estado normal';
+        let paperOk = true;
+        let lowPaper = false;
+
+        if (isSemPapel) {
+          status = 'Sem Papel';
+          paperOk = false;
+          lowPaper = true;
+          description = 'Sem Papel - Impressão bloqueada no relógio';
+        } else if (isPoucoPapel) {
+          status = 'Pouco Papel';
+          paperOk = true;
+          lowPaper = true;
+          description = 'Pouco Papel - Sensor acionado, substituição necessária';
+        }
+
+        finish({
+          ok: true,
+          status,
+          paperOk,
+          lowPaper,
+          description,
+          latencyMs: Date.now() - start,
+        });
+      } catch (err) {
+        finish({ ok: false, status: 'Erro', paperOk: false, lowPaper: false, description: err.message, latencyMs: Date.now() - start, error: err.message });
+      }
+    });
+  });
+}
+
+/**
+ * Query internal status telemetry from a Henry REP clock.
+ * @param {string} ip
+ * @param {number} [port=3000]
+ * @param {string} [password=""]
+ * @returns {Promise<{ ok: boolean, statusBobina: string, data?: object, latencyMs: number, error?: string }>}
+ */
+async function queryHenryStatus(ip, port = 3000, password = '') {
+  const paper = await getHenryPaperRollStatus(ip, port, password);
+  return {
+    ok: paper.ok,
+    statusBobina: paper.status,
+    data: paper,
+    latencyMs: paper.latencyMs,
+    error: paper.error,
+  };
+}
+
 module.exports = {
   STX,
   ETX,
@@ -1262,6 +1406,8 @@ module.exports = {
   receiveHenryEmployer,
   parseHenryBiometricResponse,
   receiveHenryBiometrics,
+  getHenryPaperRollStatus,
+  queryHenryStatus,
   syncHenryDateTime,
   sendHenryCommand,
 };

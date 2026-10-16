@@ -70,6 +70,7 @@ async function queryEquipmentStatus(eq) {
   const family = getManufacturerFamily(eq.tipoId);
   const ip = eq.ip;
   const port = eq.porta;
+  const password = eq.senha || '';
 
   if (!ip) {
     return { ok: false, manufacturer: family, latencyMs: 0, error: 'Equipment has no IP address configured' };
@@ -77,15 +78,46 @@ async function queryEquipmentStatus(eq) {
 
   switch (family) {
     case 'henry': {
-      const res = await henry.queryHenryStatus(ip, port);
+      const res = await henry.queryHenryStatus(ip, port, password);
       return { ...res, manufacturer: 'Henry' };
     }
     case 'controlid': {
-      const res = await controlid.getControlIdSystemInfo(ip, port);
-      return { ...res, manufacturer: 'Control iD' };
+      const res = await controlid.getControlIdPaperRollStatus(ip, port, 'admin', password || 'admin');
+      return { ...res, statusBobina: res.status, data: res, manufacturer: 'Control iD' };
     }
     default: {
       return { ok: false, manufacturer: 'Generic', latencyMs: 0, error: `Status telemetry for type #${eq.tipoId} not supported` };
+    }
+  }
+}
+
+/**
+ * Query paper roll sensor status (EstadoBobina) from equipment using its manufacturer-specific protocol.
+ * Discovered via REA from Secullum.Comunicacao.IEquipamentoRep.EstadoBobina.
+ * @param {object} eq - Normalized equipment object
+ * @returns {Promise<{ ok: boolean, status: string, paperOk: boolean, lowPaper: boolean, description: string, manufacturer: string, latencyMs: number, error?: string }>}
+ */
+async function queryEquipmentPaperRoll(eq) {
+  const family = getManufacturerFamily(eq.tipoId);
+  const ip = eq.ip;
+  const port = eq.porta;
+  const password = eq.senha || '';
+
+  if (!ip) {
+    return { ok: false, status: 'Desconhecido', paperOk: false, lowPaper: false, description: 'Equipamento sem IP configurado', manufacturer: family, latencyMs: 0, error: 'Equipment has no IP address configured' };
+  }
+
+  switch (family) {
+    case 'henry': {
+      const res = await henry.getHenryPaperRollStatus(ip, port, password);
+      return { ...res, manufacturer: 'Henry' };
+    }
+    case 'controlid': {
+      const res = await controlid.getControlIdPaperRollStatus(ip, port, 'admin', password || 'admin');
+      return { ...res, manufacturer: 'Control iD' };
+    }
+    default: {
+      return { ok: false, status: 'Normal', paperOk: true, lowPaper: false, description: `Sensor de bobina não suportado para tipo #${eq.tipoId}`, manufacturer: 'Generic', latencyMs: 0 };
     }
   }
 }
@@ -340,5 +372,6 @@ module.exports = {
   sendEquipmentEmployer,
   receiveEquipmentEmployer,
   receiveEquipmentBiometrics,
+  queryEquipmentPaperRoll,
 };
 
