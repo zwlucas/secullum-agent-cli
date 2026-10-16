@@ -23,6 +23,49 @@ const AGENT_VERSION = '1.54.0.0';
 const PROTOCOL_VERSION = 19;
 
 /**
+ * Secullum.Comunicacao.TipoTarefa enum values (decompiled via REA).
+ */
+const TipoTarefa = Object.freeze({
+  EnviarConfiguracoes: 0,
+  EnviarDataHora: 1,
+  EnviarListaPessoas: 2,
+  EnviarAutomaticoPessoas: 3,
+  EnviarAutomaticoHorarios: 4,
+  ReceberConfiguracoes: 5,
+  ReceberDataHora: 6,
+  ReceberListaPessoas: 7,
+  ReceberRegistros: 8,
+  ListarPessoas: 9,
+  ApagarPessoas: 10,
+  CapturarDigital: 11,
+  EnvioAgendadoDataHora: 12,
+  EnvioAgendadoPessoas: 13,
+  RecebimentoAgendadoRegistros: 14,
+  EnvioAutomaticoBiometrias: 15,
+  ReceberEmpregador: 16,
+  EnviarEmpregador: 17,
+  RecebimentoAgendadoPessoas: 18,
+  EnvioAutomaticoDados: 19,
+  DesbloquearEquipamento: 20,
+  ExportarFuncionariosRB1: 21,
+  ImportarFuncionariosRB1: 22,
+  AgenteConectado: 23,
+  AgenteDesconectado: 24,
+  AgenteReconectado: 25,
+  ReceberRegistrosTabelaTemporaria: 26,
+  RecebimentoAutomaticoRegistros: 27,
+  ReceberDigitais: 28,
+  DownloadLogEventos: 29,
+  InclusaoRegistrosTabelaTemporaria: 30,
+  ExportarFuncionariosRB2: 31,
+  ImportarFuncionariosRB2: 32,
+  RecebimentoAutomaticoFotosRegistros: 33,
+  RecebimentoAgendadoBiometrias: 34,
+  SolicitandoFotosPendentesRegistros: 35,
+  ConversaoBiometriaFacial: 36,
+});
+
+/**
  * Retrieve primary physical MAC address of the active network interface.
  * Formats as colon-separated or dash-separated hex (similar to .NET NetworkInterface.GetPhysicalAddress).
  * @returns {string}
@@ -48,6 +91,9 @@ class RealTimeGateway extends EventEmitter {
    * @param {string} [options.accessToken] - OAuth token (optional, auto-loaded)
    * @param {string} [options.bancoId] - Database GUID (Group)
    * @param {Array<object>} [options.equipments] - Equipment list to register
+   * @param {Record<string|number, boolean>} [options.statusEquipamentos] - Initial equipment connection map
+   * @param {Record<string|number, string>} [options.statusBobina] - Initial paper roll sensor map
+   * @param {string} [options.instancia=''] - Service instance name
    * @param {boolean} [options.autoReconnect=true] - Reconnect automatically on disconnect
    * @param {number} [options.reconnectDelay=5000] - Delay in ms before reconnect
    */
@@ -57,6 +103,9 @@ class RealTimeGateway extends EventEmitter {
     this.accessToken = options.accessToken || null;
     this.bancoId = options.bancoId || null;
     this.equipments = options.equipments || [];
+    this.statusEquipamentos = options.statusEquipamentos || {};
+    this.statusBobina = options.statusBobina || {};
+    this.instancia = options.instancia || '';
     this.autoReconnect = options.autoReconnect !== false;
     this.reconnectDelay = options.reconnectDelay || 5000;
 
@@ -222,14 +271,26 @@ class RealTimeGateway extends EventEmitter {
       .map((e) => (typeof e === 'number' ? e : Number(e.Id ?? e.id ?? e)))
       .filter((id) => !Number.isNaN(id));
 
+    // Ensure statusEquipamentos and statusBobina maps have keys for all registered equipment
+    const statusEquip = { ...this.statusEquipamentos };
+    const statusBob = { ...this.statusBobina };
+    for (const id of equipIds) {
+      if (statusEquip[id] === undefined && statusEquip[String(id)] === undefined) {
+        statusEquip[id] = true;
+      }
+      if (statusBob[id] === undefined && statusBob[String(id)] === undefined) {
+        statusBob[id] = 'Normal';
+      }
+    }
+
     const payload = {
       NomeComputador: os.hostname(),
       VersaoServicoComunicacao: AGENT_VERSION,
       ListaEquipamentos: equipIds,
-      StatusBobina: {},
-      StatusEquipamentos: {},
+      StatusBobina: statusBob,
+      StatusEquipamentos: statusEquip,
       LeitoresBiometricos: [],
-      Instancia: null,
+      Instancia: this.instancia || '',
       MAC: getPrimaryMacAddress(),
     };
 
@@ -276,14 +337,56 @@ class RealTimeGateway extends EventEmitter {
 
   /**
    * Inform Secullum Cloud of equipment connection status.
+   * Method: 'InformarStatusEquipamento' on Hub 'Comunicacao'
+   * Arguments: [ equipamentoId (int), conectado (bool) ]
+   * @param {number|string} equipId
+   * @param {boolean} isConnected
+   */
+  informarStatusEquipamento(equipId, isConnected) {
+    const id = Number(equipId);
+    const conn = Boolean(isConnected);
+    this.statusEquipamentos[id] = conn;
+    this.sendHubMethod('Comunicacao', 'InformarStatusEquipamento', [id, conn]);
+  }
+
+  /**
+   * Inform Secullum Cloud of equipment paper roll status.
+   * Method: 'InformarStatusBobina' on Hub 'Comunicacao'
+   * Arguments: [ equipamentoId (int), status (string) ]
+   * @param {number|string} equipId
+   * @param {string} status
+   */
+  informarStatusBobina(equipId, status) {
+    const id = Number(equipId);
+    const st = String(status || 'Normal');
+    this.statusBobina[id] = st;
+    this.sendHubMethod('Comunicacao', 'InformarStatusBobina', [id, st]);
+  }
+
+  /**
+   * Inform Secullum Cloud of communication task completion.
+   * Method: 'InformarTerminoComunicacao' on Hub 'Comunicacao'
+   * Arguments: [ equipamentoId (int), tarefa (int TipoTarefa), mensagemErro (string) ]
+   * @param {number|string} equipId
+   * @param {number} tarefa
+   * @param {string} [mensagemErro='']
+   */
+  informarTerminoComunicacao(equipId, tarefa, mensagemErro = '') {
+    this.sendHubMethod('Comunicacao', 'InformarTerminoComunicacao', [
+      Number(equipId),
+      Number(tarefa),
+      String(mensagemErro || ''),
+    ]);
+  }
+
+  /**
+   * Backward-compatible alias for informing equipment status.
+   * Dispatches exact Hub method 'InformarStatusEquipamento' to Secullum Cloud.
    * @param {number} equipId
    * @param {boolean} isConnected
    */
   sendEquipmentStatus(equipId, isConnected) {
-    this.sendHubMethod('Comunicacao', 'InformarEstadoConexao', [
-      equipId,
-      isConnected,
-    ]);
+    this.informarStatusEquipamento(equipId, isConnected);
   }
 
   /**
@@ -327,6 +430,8 @@ class RealTimeGateway extends EventEmitter {
 module.exports = {
   DEFAULT_REALTIME_URL,
   AGENT_VERSION,
+  PROTOCOL_VERSION,
+  TipoTarefa,
   getPrimaryMacAddress,
   RealTimeGateway,
 };

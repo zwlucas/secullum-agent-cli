@@ -23,7 +23,7 @@ const {
 } = require('../protocols/dispatcher');
 const { probeTcp } = require('../probe');
 const { captureBiometric } = require('../biometric');
-const { RealTimeGateway } = require('../realtime');
+const { RealTimeGateway, TipoTarefa } = require('../realtime');
 const {
   colors,
   symbols,
@@ -74,8 +74,33 @@ async function connectCommand(args = []) {
 
   keyValue('Active Equipment', `${activeEquipments.length} equipment announced to cloud`);
 
+  // Probe active equipment before handshake so initial status sent in EstabelecerConexaoAgente is accurate
+  const initialStatusEquip = {};
+  const initialStatusBobina = {};
+  for (const eqRaw of activeEquipments) {
+    const eq = normalizeEquipment(eqRaw);
+    const id = Number(eq.id);
+    if (eq.ip && eq.comunicacao !== 3) {
+      const probe = await probeTcp(eq.ip, eq.porta, 1500);
+      initialStatusEquip[id] = probe.ok;
+      initialStatusBobina[id] = 'Normal';
+      eq.lastConnected = probe.ok;
+      const statusText = probe.ok
+        ? `${colors.green('Online')} (${probe.latencyMs}ms)`
+        : colors.red('Offline');
+      keyValue(`Equipamento #${id}`, `${eq.descricao} -> ${statusText}`);
+    } else {
+      initialStatusEquip[id] = false;
+      initialStatusBobina[id] = 'Normal';
+      eq.lastConnected = false;
+      keyValue(`Equipamento #${id}`, `${eq.descricao} -> ${colors.yellow('Modo USB / Sem IP')}`);
+    }
+  }
+
   const gateway = new RealTimeGateway({
     equipments: activeEquipments,
+    statusEquipamentos: initialStatusEquip,
+    statusBobina: initialStatusBobina,
     bancoId: session.bancoSelecionado.Identificador,
     autoReconnect: true,
   });
@@ -93,13 +118,63 @@ async function connectCommand(args = []) {
   });
 
   let pollInterval = null;
+  let telemetryInterval = null;
 
   gateway.on('registered', (agentData) => {
-    success(`Agent registered on Hub "Comunicacao" (MAC: ${agentData.MAC}, Equipments: ${agentData.ListaEquipamentos.length})`);
-    console.log(`\n${colors.cyan}${symbols.bullet} Standalone agent is now LIVE. Listening for cloud events...${colors.reset}`);
-    console.log(`${colors.dim}Background auto-polling of time clocks active (every 60s). Press Ctrl+C to stop.${colors.reset}\n`);
+    success(
+      `Agent registered on Hub "Comunicacao" (MAC: ${agentData.MAC}, Equipments: ${agentData.ListaEquipamentos.length})`
+    );
+    console.log(
+      `\n${colors.cyan}${symbols.bullet} Standalone agent is now LIVE. Listening for cloud events...${colors.reset}`
+    );
+    console.log(
+      `${colors.dim}Real-time equipment telemetry active (every 5s). Auto-polling active (every 60s). Press Ctrl+C to stop.${colors.reset}\n`
+    );
 
-    // Start background auto-collection polling for punches
+    // Immediately notify Secullum Cloud of verified equipment status
+    for (const eqRaw of activeEquipments) {
+      const eq = normalizeEquipment(eqRaw);
+      const isConnected = Boolean(initialStatusEquip[eq.id]);
+      gateway.informarStatusEquipamento(eq.id, isConnected);
+      gateway.informarStatusBobina(eq.id, initialStatusBobina[eq.id] || 'Normal');
+    }
+
+    // Fast connection telemetry loop (every 5s) matching MonitorarEquipamento in official service
+    if (!telemetryInterval && activeEquipments.length > 0) {
+      let isCheckingTelemetry = false;
+      telemetryInterval = setInterval(async () => {
+        if (isCheckingTelemetry) return;
+        isCheckingTelemetry = true;
+        try {
+          for (const eqRaw of activeEquipments) {
+            const eq = normalizeEquipment(eqRaw);
+            if (!eq.ip || eq.comunicacao === 3) continue;
+
+            const probe = await probeTcp(eq.ip, eq.porta, 1500);
+            const isConn = probe.ok;
+
+            if (eq.lastConnected !== isConn) {
+              eq.lastConnected = isConn;
+              gateway.informarStatusEquipamento(eq.id, isConn);
+              const timeStr = new Date().toLocaleTimeString();
+              if (isConn) {
+                console.log(
+                  `\n${colors.bold(colors.green(`[${timeStr}] [Telemetria Conexão] Equipamento #${eq.id} (${eq.descricao}): Conectado (${probe.latencyMs}ms) ${symbols.check}`))}`
+                );
+              } else {
+                console.log(
+                  `\n${colors.bold(colors.red(`[${timeStr}] [Telemetria Conexão] Equipamento #${eq.id} (${eq.descricao}): Desconectado ${symbols.cross}`))}`
+                );
+              }
+            }
+          }
+        } catch {} finally {
+          isCheckingTelemetry = false;
+        }
+      }, 5000);
+    }
+
+    // Background auto-collection polling for punches & periodic paper roll check (every 60s)
     if (!pollInterval && activeEquipments.length > 0) {
       let isPolling = false;
       pollInterval = setInterval(async () => {
@@ -116,13 +191,18 @@ async function connectCommand(args = []) {
             const res = await collectEquipmentRecords(eq, eq.ultimoNsr, 50);
             if (res.ok && res.records && res.records.length > 0) {
               const timeStr = new Date().toLocaleTimeString();
-              console.log(`\n${colors.bold(colors.green(`[${timeStr}] [Auto-Coleta] ${res.records.length} nova(s) batida(s) de #${eq.id} (${eq.descricao})`))}`);
+              console.log(
+                `\n${colors.bold(colors.green(`[${timeStr}] [Auto-Coleta] ${res.records.length} nova(s) batida(s) de #${eq.id} (${eq.descricao})`))}`
+              );
               try {
                 await uploadPunchRecords(res.records, false);
                 gateway.sendHubMethod('Comunicacao', 'InformarNsrEquipamento', [eq.id, res.lastNsr]);
                 gateway.sendHubMethod('Comunicacao', 'ReceberRegistrosTabelaTemporaria', []);
+                gateway.informarTerminoComunicacao(eq.id, TipoTarefa.ReceberRegistros, '');
                 eq.ultimoNsr = res.lastNsr;
-                console.log(`  ${colors.dim}Batidas salvas no Secullum Cloud. Novo NSR: ${res.lastNsr} ${symbols.check}${colors.reset}`);
+                console.log(
+                  `  ${colors.dim}Batidas salvas no Secullum Cloud. Novo NSR: ${res.lastNsr} ${symbols.check}${colors.reset}`
+                );
               } catch (upErr) {
                 console.log(`  ${colors.yellow}Falha ao subir para Secullum Cloud: ${upErr.message}${colors.reset}`);
               }
@@ -133,14 +213,20 @@ async function connectCommand(args = []) {
               const paper = await queryEquipmentPaperRoll(eq);
               if (paper.ok && eq.lastPaperStatus !== paper.status) {
                 eq.lastPaperStatus = paper.status;
-                gateway.sendHubMethod('Comunicacao', 'InformarStatusBobina', [eq.id, paper.status]);
+                gateway.informarStatusBobina(eq.id, paper.status);
                 const timeStr = new Date().toLocaleTimeString();
                 if (paper.status === 'Sem Papel') {
-                  console.log(`\n${colors.bold(colors.red(`[${timeStr}] [Sensor Bobina] Equipamento #${eq.id} (${eq.descricao}): ${paper.description} ${symbols.cross}`))}`);
+                  console.log(
+                    `\n${colors.bold(colors.red(`[${timeStr}] [Sensor Bobina] Equipamento #${eq.id} (${eq.descricao}): ${paper.description} ${symbols.cross}`))}`
+                  );
                 } else if (paper.status === 'Pouco Papel') {
-                  console.log(`\n${colors.bold(colors.yellow(`[${timeStr}] [Sensor Bobina] Equipamento #${eq.id} (${eq.descricao}): ${paper.description} ⚠️`))}`);
+                  console.log(
+                    `\n${colors.bold(colors.yellow(`[${timeStr}] [Sensor Bobina] Equipamento #${eq.id} (${eq.descricao}): ${paper.description} ⚠️`))}`
+                  );
                 } else {
-                  console.log(`  ${colors.dim}[${timeStr}] [Sensor Bobina] Equipamento #${eq.id} (${eq.descricao}): Bobina Normal (${paper.latencyMs}ms)${colors.reset}`);
+                  console.log(
+                    `  ${colors.dim}[${timeStr}] [Sensor Bobina] Equipamento #${eq.id} (${eq.descricao}): Bobina Normal (${paper.latencyMs}ms)${colors.reset}`
+                  );
                 }
               }
             } catch {}
@@ -176,15 +262,20 @@ async function connectCommand(args = []) {
           if (res.ok) {
             success(`Clock synced with ${res.manufacturer} equipment #${equipId} (${res.latencyMs}ms)`);
             gateway.sendCommunicationProgress(equipId, 'Data e hora sincronizadas', 100);
+            gateway.informarTerminoComunicacao(equipId, TipoTarefa.EnviarDataHora, '');
           } else {
             warn(`Clock sync failed for equipment #${equipId}: ${res.error}`);
             gateway.sendCommunicationProgress(equipId, `Falha: ${res.error}`, 0);
+            gateway.informarTerminoComunicacao(equipId, TipoTarefa.EnviarDataHora, res.error || 'Falha ao sincronizar');
           }
         } catch (err) {
           warn(`Error syncing clock with equipment #${equipId}: ${err.message}`);
+          gateway.sendCommunicationProgress(equipId, `Erro: ${err.message}`, 0);
+          gateway.informarTerminoComunicacao(equipId, TipoTarefa.EnviarDataHora, err.message);
         }
       } else {
         gateway.sendCommunicationProgress(equipId, 'Equipamento desconhecido', 0);
+        gateway.informarTerminoComunicacao(equipId, TipoTarefa.EnviarDataHora, 'Equipamento desconhecido');
       }
     }
 
@@ -208,23 +299,29 @@ async function connectCommand(args = []) {
             }
             success(`Coleta concluída para #${equipId}: ${res.rawCount} registros (NSR: ${res.lastNsr})`);
             gateway.sendCommunicationProgress(equipId, `${res.rawCount} registros coletados com sucesso`, 100);
+            gateway.informarTerminoComunicacao(equipId, TipoTarefa.ReceberRegistros, '');
           } else {
             warn(`Falha na coleta de registros para #${equipId}: ${res.error}`);
             gateway.sendCommunicationProgress(equipId, `Falha: ${res.error}`, 0);
+            gateway.informarTerminoComunicacao(equipId, TipoTarefa.ReceberRegistros, res.error || 'Falha na coleta');
           }
         } catch (err) {
           warn(`Erro ao coletar registros de #${equipId}: ${err.message}`);
           gateway.sendCommunicationProgress(equipId, `Erro: ${err.message}`, 0);
+          gateway.informarTerminoComunicacao(equipId, TipoTarefa.ReceberRegistros, err.message);
         }
       } else {
         gateway.sendCommunicationProgress(equipId, 'Equipamento desconhecido', 0);
+        gateway.informarTerminoComunicacao(equipId, TipoTarefa.ReceberRegistros, 'Equipamento desconhecido');
       }
     }
 
     // 3. Employee list push request (EnviarListaPessoas / ListarPessoas)
     if (evt.eventName === 'EnviarListaPessoas' || evt.eventName === 'ListarPessoas') {
       const equipId = evt.args[0];
-      info(`Cloud requested employee sync for equipment #${equipId}`);
+      const tipoTarefa =
+        evt.eventName === 'ListarPessoas' ? TipoTarefa.ListarPessoas : TipoTarefa.EnviarListaPessoas;
+      info(`Cloud requested employee sync (${evt.eventName}) for equipment #${equipId}`);
       const targetRaw = allEquipments.find((e) => Number(e.Id ?? e.id) === Number(equipId));
       if (targetRaw) {
         const targetEq = normalizeEquipment(targetRaw);
@@ -237,16 +334,20 @@ async function connectCommand(args = []) {
             success(`Enviados ${res.count} funcionários com sucesso para equipamento #${equipId}`);
             gateway.sendHubMethod('Comunicacao', 'InformarPessoasEnviadas', [equipId, res.count]);
             gateway.sendCommunicationProgress(equipId, `${res.count} pessoas enviadas com sucesso`, 100);
+            gateway.informarTerminoComunicacao(equipId, tipoTarefa, '');
           } else {
             warn(`Falha ao enviar funcionários para #${equipId}: ${res.error}`);
             gateway.sendCommunicationProgress(equipId, `Falha: ${res.error}`, 0);
+            gateway.informarTerminoComunicacao(equipId, tipoTarefa, res.error || 'Falha no envio');
           }
         } catch (err) {
           warn(`Erro ao enviar pessoas para #${equipId}: ${err.message}`);
           gateway.sendCommunicationProgress(equipId, `Erro: ${err.message}`, 0);
+          gateway.informarTerminoComunicacao(equipId, tipoTarefa, err.message);
         }
       } else {
         gateway.sendCommunicationProgress(equipId, 'Equipamento desconhecido', 0);
+        gateway.informarTerminoComunicacao(equipId, tipoTarefa, 'Equipamento desconhecido');
       }
     }
 
@@ -261,7 +362,10 @@ async function connectCommand(args = []) {
           gateway.sendHubMethod('Comunicacao', 'InformarBiometriaCapturada', [bioResult]);
         } else {
           warn(`Falha na captura biométrica: ${bioResult.error}`);
-          gateway.sendHubMethod('Comunicacao', 'InformarNotificacaoLeitorBiometrico', [tipoBiometria, bioResult.error || 'Falha ao capturar']);
+          gateway.sendHubMethod('Comunicacao', 'InformarNotificacaoLeitorBiometrico', [
+            tipoBiometria,
+            bioResult.error || 'Falha ao capturar',
+          ]);
         }
       } catch (err) {
         warn(`Erro na captura biométrica: ${err.message}`);
@@ -285,18 +389,21 @@ async function connectCommand(args = []) {
           const res = await sendEquipmentEmployer(targetEq, employer);
           if (res.ok) {
             success(`Dados do empregador enviados com sucesso para #${equipId} via protocolo ${res.manufacturer}!`);
-            gateway.sendHubMethod('Comunicacao', 'InformarTerminoComunicacao', [equipId, '']);
+            gateway.informarTerminoComunicacao(equipId, TipoTarefa.EnviarEmpregador, '');
             gateway.sendCommunicationProgress(equipId, 'Dados do empregador enviados com sucesso', 100);
           } else {
             warn(`Falha ao enviar empregador para #${equipId}: ${res.error}`);
             gateway.sendCommunicationProgress(equipId, `Falha: ${res.error}`, 0);
+            gateway.informarTerminoComunicacao(equipId, TipoTarefa.EnviarEmpregador, res.error || 'Falha no envio');
           }
         } catch (err) {
           warn(`Erro ao enviar empregador para #${equipId}: ${err.message}`);
           gateway.sendCommunicationProgress(equipId, `Erro: ${err.message}`, 0);
+          gateway.informarTerminoComunicacao(equipId, TipoTarefa.EnviarEmpregador, err.message);
         }
       } else {
         gateway.sendCommunicationProgress(equipId, 'Equipamento desconhecido', 0);
+        gateway.informarTerminoComunicacao(equipId, TipoTarefa.EnviarEmpregador, 'Equipamento desconhecido');
       }
     }
 
@@ -314,18 +421,21 @@ async function connectCommand(args = []) {
           if (res.ok && res.employer) {
             success(`Dados do empregador recebidos com sucesso de #${equipId}: ${res.employer.RazaoSocial}`);
             gateway.sendHubMethod('Comunicacao', 'InformarEmpregadorEquipamento', [equipId, res.employer]);
-            gateway.sendHubMethod('Comunicacao', 'InformarTerminoComunicacao', [equipId, '']);
+            gateway.informarTerminoComunicacao(equipId, TipoTarefa.ReceberEmpregador, '');
             gateway.sendCommunicationProgress(equipId, 'Empregador lido com sucesso', 100);
           } else {
             warn(`Falha ao receber empregador de #${equipId}: ${res.error}`);
             gateway.sendCommunicationProgress(equipId, `Falha: ${res.error}`, 0);
+            gateway.informarTerminoComunicacao(equipId, TipoTarefa.ReceberEmpregador, res.error || 'Falha no recebimento');
           }
         } catch (err) {
           warn(`Erro ao receber empregador de #${equipId}: ${err.message}`);
           gateway.sendCommunicationProgress(equipId, `Erro: ${err.message}`, 0);
+          gateway.informarTerminoComunicacao(equipId, TipoTarefa.ReceberEmpregador, err.message);
         }
       } else {
         gateway.sendCommunicationProgress(equipId, 'Equipamento desconhecido', 0);
+        gateway.informarTerminoComunicacao(equipId, TipoTarefa.ReceberEmpregador, 'Equipamento desconhecido');
       }
     }
 
@@ -355,19 +465,21 @@ async function connectCommand(args = []) {
             success(`Digitais recebidas com sucesso de #${equipId}: ${res.count} template(s) via protocolo ${res.manufacturer}`);
             gateway.sendCommunicationProgress(equipId, 'Transmitindo digitais à nuvem...', 90);
             await uploadBiometrics(equipId, res.biometrics, res.tipoBiometria, gateway);
+            gateway.informarTerminoComunicacao(equipId, TipoTarefa.ReceberDigitais, '');
             gateway.sendCommunicationProgress(equipId, 'Digitais recebidas e atualizadas com sucesso', 100);
           } else {
             warn(`Falha ao receber digitais de #${equipId}: ${res.error}`);
-            gateway.sendHubMethod('Comunicacao', 'InformarTerminoComunicacao', [equipId, res.error || 'Falha no recebimento']);
+            gateway.informarTerminoComunicacao(equipId, TipoTarefa.ReceberDigitais, res.error || 'Falha no recebimento');
             gateway.sendCommunicationProgress(equipId, `Falha: ${res.error}`, 0);
           }
         } catch (err) {
           warn(`Erro ao receber digitais de #${equipId}: ${err.message}`);
-          gateway.sendHubMethod('Comunicacao', 'InformarTerminoComunicacao', [equipId, err.message]);
+          gateway.informarTerminoComunicacao(equipId, TipoTarefa.ReceberDigitais, err.message);
           gateway.sendCommunicationProgress(equipId, `Erro: ${err.message}`, 0);
         }
       } else {
         gateway.sendCommunicationProgress(equipId, 'Equipamento desconhecido', 0);
+        gateway.informarTerminoComunicacao(equipId, TipoTarefa.ReceberDigitais, 'Equipamento desconhecido');
       }
     }
 
@@ -395,26 +507,31 @@ async function connectCommand(args = []) {
 
           if (res.ok) {
             success(`Exclusão concluída com sucesso em #${equipId}: ${res.count} pessoa(s) removida(s)`);
-            gateway.sendHubMethod('Comunicacao', 'InformarTerminoComunicacao', [equipId, '']);
+            gateway.informarTerminoComunicacao(equipId, TipoTarefa.ApagarPessoas, '');
             gateway.sendCommunicationProgress(equipId, `${res.count} pessoa(s) apagada(s) com sucesso`, 100);
           } else {
             warn(`Falha ao apagar pessoas de #${equipId}: ${res.error}`);
-            gateway.sendHubMethod('Comunicacao', 'InformarTerminoComunicacao', [equipId, res.error || 'Falha na exclusão']);
+            gateway.informarTerminoComunicacao(equipId, TipoTarefa.ApagarPessoas, res.error || 'Falha na exclusão');
             gateway.sendCommunicationProgress(equipId, `Falha: ${res.error}`, 0);
           }
         } catch (err) {
           warn(`Erro ao apagar pessoas de #${equipId}: ${err.message}`);
-          gateway.sendHubMethod('Comunicacao', 'InformarTerminoComunicacao', [equipId, err.message]);
+          gateway.informarTerminoComunicacao(equipId, TipoTarefa.ApagarPessoas, err.message);
           gateway.sendCommunicationProgress(equipId, `Erro: ${err.message}`, 0);
         }
       } else {
         gateway.sendCommunicationProgress(equipId, 'Equipamento desconhecido', 0);
+        gateway.informarTerminoComunicacao(equipId, TipoTarefa.ApagarPessoas, 'Equipamento desconhecido');
       }
     }
 
     // 9. Paper roll sensor telemetry request (ConsultarStatusBobina / StatusBobina)
     // Discovered via REA from Secullum.PontoWeb.ServicoComunicacao.Services.ComunicacaoService.GerenciamentoComunicacao_EstadoBobina
-    if (evt.eventName === 'ConsultarStatusBobina' || evt.eventName === 'VerificarStatusBobina' || evt.eventName === 'StatusBobina') {
+    if (
+      evt.eventName === 'ConsultarStatusBobina' ||
+      evt.eventName === 'VerificarStatusBobina' ||
+      evt.eventName === 'StatusBobina'
+    ) {
       const equipId = evt.args[0];
       info(`Cloud requested paper roll sensor status for equipment #${equipId}`);
       const targetRaw = allEquipments.find((e) => Number(e.Id ?? e.id) === Number(equipId));
@@ -423,17 +540,18 @@ async function connectCommand(args = []) {
         gateway.sendCommunicationProgress(equipId, 'Consultando sensor de bobina no relógio...', 50);
         try {
           const paper = await queryEquipmentPaperRoll(targetEq);
-          gateway.sendHubMethod('Comunicacao', 'InformarStatusBobina', [equipId, paper.status]);
-          gateway.sendHubMethod('Comunicacao', 'InformarTerminoComunicacao', [equipId, '']);
+          gateway.informarStatusBobina(equipId, paper.status);
+          gateway.informarTerminoComunicacao(equipId, TipoTarefa.EnviarConfiguracoes, '');
           gateway.sendCommunicationProgress(equipId, `Sensor de bobina: ${paper.status}`, 100);
           success(`Status da bobina enviado para #${equipId}: ${paper.description}`);
         } catch (err) {
           warn(`Erro ao consultar bobina de #${equipId}: ${err.message}`);
-          gateway.sendHubMethod('Comunicacao', 'InformarTerminoComunicacao', [equipId, err.message]);
+          gateway.informarTerminoComunicacao(equipId, TipoTarefa.EnviarConfiguracoes, err.message);
           gateway.sendCommunicationProgress(equipId, `Erro: ${err.message}`, 0);
         }
       } else {
         gateway.sendCommunicationProgress(equipId, 'Equipamento desconhecido', 0);
+        gateway.informarTerminoComunicacao(equipId, TipoTarefa.EnviarConfiguracoes, 'Equipamento desconhecido');
       }
     }
   });
@@ -458,6 +576,7 @@ async function connectCommand(args = []) {
     console.log(`\n${colors.dim}Stopping standalone agent...${colors.reset}`);
     clearInterval(keepAliveTimer);
     if (pollInterval) clearInterval(pollInterval);
+    if (telemetryInterval) clearInterval(telemetryInterval);
     gateway.disconnect();
     process.exit(0);
   };
@@ -472,6 +591,7 @@ async function connectCommand(args = []) {
   } catch (err) {
     clearInterval(keepAliveTimer);
     if (pollInterval) clearInterval(pollInterval);
+    if (telemetryInterval) clearInterval(telemetryInterval);
     printError(`Connection failed: ${err.message}`);
     process.exit(1);
   }

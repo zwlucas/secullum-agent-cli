@@ -285,11 +285,16 @@ async function uploadBiometrics(equipId, biometrics = [], tipoBiometria = 0, exi
       ]);
     }
 
-    // 3. Notify completion of biometrics receiving
-    gateway.sendHubMethod('Comunicacao', 'InformarTerminoComunicacao', [
-      numEquipId,
-      '',
-    ]);
+    // 3. Notify completion of biometrics receiving (TipoTarefa.ReceberDigitais = 28)
+    if (typeof gateway.informarTerminoComunicacao === 'function') {
+      gateway.informarTerminoComunicacao(numEquipId, 28, '');
+    } else {
+      gateway.sendHubMethod('Comunicacao', 'InformarTerminoComunicacao', [
+        numEquipId,
+        28,
+        '',
+      ]);
+    }
 
     // Give websocket a moment to flush outbound frames before disconnecting if transient
     if (ownsGateway) {
