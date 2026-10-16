@@ -8,7 +8,7 @@
 
 const os = require('node:os');
 const { loadSession, getAddedEquipmentIds } = require('../session');
-const { listEquipments, uploadPunchRecords, fetchEmployees, fetchEmployer } = require('../pontoweb');
+const { listEquipments, uploadPunchRecords, fetchEmployees, fetchEmployer, uploadBiometrics } = require('../pontoweb');
 const { normalizeEquipment } = require('../equipment');
 const {
   syncEquipmentDateTime,
@@ -16,6 +16,7 @@ const {
   sendEquipmentEmployees,
   sendEquipmentEmployer,
   receiveEquipmentEmployer,
+  receiveEquipmentBiometrics,
 } = require('../protocols/dispatcher');
 const { probeTcp } = require('../probe');
 const { captureBiometric } = require('../biometric');
@@ -301,6 +302,48 @@ async function connectCommand(args = []) {
           }
         } catch (err) {
           warn(`Erro ao receber empregador de #${equipId}: ${err.message}`);
+          gateway.sendCommunicationProgress(equipId, `Erro: ${err.message}`, 0);
+        }
+      } else {
+        gateway.sendCommunicationProgress(equipId, 'Equipamento desconhecido', 0);
+      }
+    }
+
+    // 7. Receive biometrics request (ReceberDigitais)
+    // Discovered via REA from Secullum.PontoWeb.ServicoComunicacao.Services.ComunicacaoService.ReceberDigitais
+    if (evt.eventName === 'ReceberDigitais') {
+      const equipId = evt.args[0];
+      const listaPessoas = evt.args[1] || [];
+      info(`Cloud requested biometric pull (ReceberDigitais) for equipment #${equipId}`);
+      const targetRaw = allEquipments.find((e) => Number(e.Id ?? e.id) === Number(equipId));
+      if (targetRaw) {
+        const targetEq = normalizeEquipment(targetRaw);
+        gateway.sendCommunicationProgress(equipId, 'Consultando funcionários...', 20);
+        try {
+          let employees = listaPessoas;
+          if (!employees || employees.length === 0) {
+            employees = await fetchEmployees();
+          }
+
+          gateway.sendCommunicationProgress(equipId, 'Lendo digitais do equipamento...', 40);
+          const res = await receiveEquipmentBiometrics(targetEq, employees, (curr, tot, name) => {
+            const pct = 40 + Math.round((curr / tot) * 40);
+            gateway.sendCommunicationProgress(equipId, `Lendo digital ${curr}/${tot}: ${name}`, pct);
+          });
+
+          if (res.ok) {
+            success(`Digitais recebidas com sucesso de #${equipId}: ${res.count} template(s) via protocolo ${res.manufacturer}`);
+            gateway.sendCommunicationProgress(equipId, 'Transmitindo digitais à nuvem...', 90);
+            await uploadBiometrics(equipId, res.biometrics, res.tipoBiometria, gateway);
+            gateway.sendCommunicationProgress(equipId, 'Digitais recebidas e atualizadas com sucesso', 100);
+          } else {
+            warn(`Falha ao receber digitais de #${equipId}: ${res.error}`);
+            gateway.sendHubMethod('Comunicacao', 'InformarTerminoComunicacao', [equipId, res.error || 'Falha no recebimento']);
+            gateway.sendCommunicationProgress(equipId, `Falha: ${res.error}`, 0);
+          }
+        } catch (err) {
+          warn(`Erro ao receber digitais de #${equipId}: ${err.message}`);
+          gateway.sendHubMethod('Comunicacao', 'InformarTerminoComunicacao', [equipId, err.message]);
           gateway.sendCommunicationProgress(equipId, `Erro: ${err.message}`, 0);
         }
       } else {

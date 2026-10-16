@@ -290,6 +290,103 @@ async function getControlIdEmployer(ip, port = 80, login = 'admin', password = '
   }
 }
 
+/**
+ * Receive registered biometric fingerprint templates from a Control iD terminal.
+ * Discovered via REA from Secullum.Comunicacao.ControliDRepComunicacaoNativa.ReceberDigitais.
+ * @param {string} ip
+ * @param {number} [port=80]
+ * @param {Array<object>} [employees=[]] - Cloud employee records for ID mapping
+ * @param {string} [login="admin"]
+ * @param {string} [password="admin"]
+ * @param {function} [onProgress]
+ * @returns {Promise<{ ok: boolean, biometrics: Array<object>, count: number, latencyMs: number, error?: string }>}
+ */
+async function getControlIdBiometrics(ip, port = 80, employees = [], login = 'admin', password = 'admin', onProgress = null) {
+  const start = Date.now();
+  const auth = await loginControlId(ip, port, login, password);
+  if (!auth.ok) {
+    return { ok: false, biometrics: [], count: 0, latencyMs: Date.now() - start, error: auth.error };
+  }
+
+  try {
+    // 1. Fetch templates
+    const tmplRes = await controlIdRequest(ip, port, `load_objects.fcgi?session=${auth.session}`, {
+      object: 'templates',
+    });
+    const templates = tmplRes.templates || [];
+
+    // 2. Fetch users to map user_id -> registration/cpf -> employee
+    let users = [];
+    try {
+      const userRes = await controlIdRequest(ip, port, `load_objects.fcgi?session=${auth.session}`, {
+        object: 'users',
+      });
+      users = userRes.users || [];
+    } catch {}
+
+    await logoutControlId(ip, port, auth.session);
+
+    // Map user_id to user
+    const userMap = new Map();
+    for (const u of users) {
+      userMap.set(u.id, u);
+    }
+
+    // Map registration/cpf to cloud employee
+    const empByFolha = new Map();
+    const empByCpf = new Map();
+    const empById = new Map();
+    for (const emp of employees) {
+      if (emp.NumeroFolha) empByFolha.set(String(emp.NumeroFolha).replace(/^0+/, ''), emp);
+      if (emp.NumeroIdentificador) empByFolha.set(String(emp.NumeroIdentificador).replace(/^0+/, ''), emp);
+      if (emp.Cpf) empByCpf.set(String(emp.Cpf).replace(/\D/g, ''), emp);
+      if (emp.Id) empById.set(Number(emp.Id), emp);
+    }
+
+    const biometrics = [];
+    const total = templates.length;
+
+    for (let i = 0; i < total; i++) {
+      const t = templates[i];
+      const u = userMap.get(t.user_id) || {};
+      const reg = String(u.registration || t.user_id || '').replace(/^0+/, '');
+      const cpf = String(u.cpf || '').replace(/\D/g, '');
+
+      const emp = empByFolha.get(reg) || empByCpf.get(cpf) || empById.get(Number(t.user_id));
+      const pessoaId = emp ? emp.Id : (u.registration || t.user_id);
+      const nome = emp ? emp.Nome : (u.name || `Usuário ${t.user_id}`);
+      const fingerIdx = t.finger_type !== undefined ? t.finger_type : 0;
+
+      if (typeof onProgress === 'function') {
+        onProgress(i + 1, total, nome);
+      }
+
+      biometrics.push({
+        PessoaId: pessoaId,
+        Tipo: 16, // Innovatrics
+        Template: t.template, // Base64 string
+        TemplateCodigo: `${reg || t.user_id}-${fingerIdx}`,
+        Dedo: fingerIdx,
+        Qualidade: 100,
+        Imagem: null,
+        TemplateStorageId: null,
+        Nome: nome,
+        Documento: cpf || reg,
+      });
+    }
+
+    return {
+      ok: true,
+      biometrics,
+      count: biometrics.length,
+      latencyMs: Date.now() - start,
+    };
+  } catch (err) {
+    await logoutControlId(ip, port, auth.session);
+    return { ok: false, biometrics: [], count: 0, latencyMs: Date.now() - start, error: err.message };
+  }
+}
+
 module.exports = {
   controlIdRequest,
   loginControlId,
@@ -300,5 +397,6 @@ module.exports = {
   sendControlIdEmployees,
   sendControlIdEmployer,
   getControlIdEmployer,
+  getControlIdBiometrics,
 };
 

@@ -6,7 +6,14 @@
 
 'use strict';
 
-const { listEquipments, getEquipment, uploadPunchRecords, fetchEmployees, fetchEmployer } = require('../pontoweb');
+const {
+  listEquipments,
+  getEquipment,
+  uploadPunchRecords,
+  fetchEmployees,
+  fetchEmployer,
+  uploadBiometrics,
+} = require('../pontoweb');
 const { normalizeEquipment } = require('../equipment');
 const { loadSession, getAddedEquipmentIds, addEquipmentId, removeEquipmentId } = require('../session');
 const { probeTcp } = require('../probe');
@@ -16,6 +23,7 @@ const {
   sendEquipmentEmployees,
   sendEquipmentEmployer,
   receiveEquipmentEmployer,
+  receiveEquipmentBiometrics,
 } = require('../protocols/dispatcher');
 const {
   colors,
@@ -519,6 +527,104 @@ async function equipmentReceiveEmployerCommand(id) {
   console.log();
 }
 
+/**
+ * Pull enrolled biometric templates from equipment to the Secullum Cloud (ReceberDigitais).
+ * Discovered via REA from Secullum.PontoWeb.ServicoComunicacao.Services.ComunicacaoService.ReceberDigitais.
+ * @param {string|number} id
+ */
+async function equipmentReceiveBiometricsCommand(id) {
+  header('Secullum Cloud — Puxar Digitais do Equipamento (ReceberDigitais)');
+
+  const session = loadSession();
+  if (!session || !session.accessToken) {
+    printError('Nenhuma sessão ativa. Execute: secullum-agent-cli login');
+    process.exit(1);
+  }
+
+  if (!id) {
+    printError('Uso: secullum-agent-cli equipment:receive-biometrics <id>');
+    process.exit(1);
+  }
+
+  let eq;
+  try {
+    process.stdout.write(`${colors.dim}Consultando equipamento #${id} no Secullum Cloud...${colors.reset}\r`);
+    const raw = await getEquipment(id);
+    eq = normalizeEquipment(raw);
+  } catch (err) {
+    printError(`Equipamento #${id} não encontrado na nuvem: ${err.message}`);
+    process.exit(1);
+  }
+
+  section('Equipamento Alvo');
+  keyValue('Nome', colors.bold(eq.descricao));
+  keyValue('Tipo / Modelo', eq.tipo);
+  keyValue('Endereço IP', `${eq.ip}:${eq.porta}`);
+
+  process.stdout.write(`\n${colors.dim}Carregando lista de colaboradores da nuvem...${colors.reset}\r`);
+  let employees = [];
+  try {
+    employees = await fetchEmployees();
+  } catch (err) {
+    printError(`Falha ao obter lista de funcionários da nuvem: ${err.message}`);
+    process.exit(1);
+  }
+
+  keyValue('Colaboradores na Nuvem', `${employees.length} cadastrados`);
+
+  section('Extração de Digitais do REP');
+  process.stdout.write(`${colors.dim}Iniciando varredura biométrica via protocolo nativo...${colors.reset}\n`);
+
+  let lastMsg = '';
+  const onProgress = (current, total, empName) => {
+    const pct = Math.round((current / total) * 100);
+    const msg = `[${pct}%] Consultando digital ${current}/${total}: ${empName}`;
+    if (msg !== lastMsg) {
+      lastMsg = msg;
+      process.stdout.write(`\r${colors.cyan}${msg.padEnd(70)}${colors.reset}`);
+    }
+  };
+
+  const res = await receiveEquipmentBiometrics(eq, employees, onProgress);
+  process.stdout.write('\r' + ' '.repeat(75) + '\r');
+
+  if (!res.ok) {
+    printError(`Falha ao receber digitais via protocolo ${res.manufacturer}: ${res.error}`);
+    console.log();
+    return;
+  }
+
+  section('Digitais Coletadas no REP');
+  keyValue('Protocolo do Fabricante', res.manufacturer);
+  keyValue('Tempo de Resposta', `${res.latencyMs}ms`);
+  keyValue('Total de Digitais Encontradas', colors.bold(String(res.count)));
+
+  if (res.biometrics.length > 0) {
+    const rows = res.biometrics.map((b) => [
+      String(b.PessoaId || '-'),
+      b.Nome || '-',
+      `Dedo #${b.Dedo}`,
+      b.Template ? `${Math.round((Buffer.from(b.Template, 'base64').length))} B` : '0 B',
+      b.TemplateCodigo || '-',
+    ]);
+
+    table(['ID Pessoa', 'Colaborador', 'Dedo', 'Tamanho', 'Código'], rows);
+
+    section('Sincronização com a Nuvem (Secullum Cloud)');
+    process.stdout.write(`${colors.dim}Transmitindo digitais para o SignalR Hub do Secullum Cloud...${colors.reset}\r`);
+
+    const upRes = await uploadBiometrics(id, res.biometrics, res.tipoBiometria);
+    if (upRes.ok) {
+      success(`Sincronização concluída com sucesso! ${res.count} biometria(s) atualizada(s) na nuvem do Secullum.`);
+    } else {
+      printError(`Falha ao enviar digitais para a nuvem: ${upRes.error}`);
+    }
+  } else {
+    info('Nenhuma impressão digital cadastrada foi encontrada no equipamento para os colaboradores consultados.');
+  }
+  console.log();
+}
+
 module.exports = {
   equipmentListCommand,
   equipmentAddCommand,
@@ -529,5 +635,6 @@ module.exports = {
   equipmentSendEmployeesCommand,
   equipmentSendEmployerCommand,
   equipmentReceiveEmployerCommand,
+  equipmentReceiveBiometricsCommand,
 };
 

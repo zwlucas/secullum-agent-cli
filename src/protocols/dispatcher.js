@@ -233,6 +233,39 @@ async function receiveEquipmentEmployer(eq) {
   }
 }
 
+/**
+ * Receive registered biometric fingerprint templates from equipment using its manufacturer-specific protocol.
+ * Discovered via REA from Secullum.Comunicacao.IEquipamentoBiometrico.ReceberDigitais.
+ * @param {object} eq - Normalized equipment object
+ * @param {Array<object>} [employees=[]] - Cloud employee records
+ * @param {function} [onProgress] - Optional progress callback
+ * @returns {Promise<{ ok: boolean, biometrics: Array<object>, count: number, tipoBiometria: number, manufacturer: string, latencyMs: number, error?: string }>}
+ */
+async function receiveEquipmentBiometrics(eq, employees = [], onProgress = null) {
+  const family = getManufacturerFamily(eq.tipoId);
+  const ip = eq.ip;
+  const port = eq.porta;
+  const password = eq.senha || '';
+
+  if (!ip) {
+    return { ok: false, biometrics: [], count: 0, tipoBiometria: 0, manufacturer: family, latencyMs: 0, error: 'Equipment has no IP address configured' };
+  }
+
+  switch (family) {
+    case 'henry': {
+      const res = await henry.receiveHenryBiometrics(ip, port, employees, password, onProgress);
+      return { ...res, tipoBiometria: 0, manufacturer: 'Henry' };
+    }
+    case 'controlid': {
+      const res = await controlid.getControlIdBiometrics(ip, port, employees, 'admin', password || 'admin', onProgress);
+      return { ...res, tipoBiometria: 16, manufacturer: 'Control iD' };
+    }
+    default: {
+      return { ok: false, biometrics: [], count: 0, tipoBiometria: 0, manufacturer: 'Generic', latencyMs: 0, error: `Biometrics extraction for type #${eq.tipoId} not yet implemented` };
+    }
+  }
+}
+
 module.exports = {
   getManufacturerFamily,
   syncEquipmentDateTime,
@@ -241,5 +274,6 @@ module.exports = {
   sendEquipmentEmployees,
   sendEquipmentEmployer,
   receiveEquipmentEmployer,
+  receiveEquipmentBiometrics,
 };
 

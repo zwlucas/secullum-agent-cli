@@ -31,6 +31,8 @@ O projeto conecta-se diretamente à **Nuvem Secullum (PontoWeb Cloud)** e aos **
 - ☁️ **Comunicação Direta com Secullum Cloud:** OAuth2 nativo, API REST PontoWeb e WebSocket RealTime (SignalR / Hub `"Comunicacao"`).
 - 🕒 **Coleta Automática de Marcações (AFD / Batidas):** Coleta relatórios de batidas a partir do último NSR dos equipamentos (Portaria 1510 e Portaria 671) e realiza o envio automático para `POST /TabelaTemporaria/false`.
 - 👥 **Envio de Novos Funcionários ao REP:** Sincroniza colaboradores cadastrados na nuvem (`GET /Funcionarios`) para a memória interna dos relógios físicos.
+- 🧬 **Puxar Digitais do Relógio para a Nuvem (ReceberDigitais):** Extrai impressões digitais cadastradas na memória dos REPs (Henry, Control iD) com decodificação de templates nativos e sincroniza diretamente com a Nuvem Secullum via SignalR Hub.
+- 🏢 **Envio e Consulta de Dados do Empregador:** Transmite e consulta Razão Social, CNPJ/CPF, CEI/CAEPF e Endereço nos REPs (Portaria 1510/671).
 - 🖐️ **Captura Ativa no Leitor USB de Mesa:** Suporte a Suprema BioMini, BioMini Adv, Control iD iDBio, LC/Futronic e Nitgen com gauge de qualidade e extração de template ANSI/ISO 378.
 - ⏱️ **Sincronização de Data e Hora em Hardware:** Ajuste de relógio em microssegundos com protocolos criptografados nativos (Henry, Control iD, Topdata).
 - 🔍 **Sondagem de Rede em Tempo Real:** Medição de latência e detecção de status LAN via sockets TCP puros.
@@ -91,7 +93,7 @@ flowchart TD
    - Handshake Inicial: `{"AccessToken": "<jwt>", "Group": "<bancoId>", "ProtocolVersion": 19, "Headers": {}}`.
    - Registro do Agente: Invoca método `EstabelecerConexaoAgente` no Hub `"Comunicacao"` enviando nome da máquina, endereço MAC e lista de equipamentos.
    - Heartbeat: Servidor envia `{"HubName": "--PING--"}` e o cliente responde `{"HubName": "--PONG--"}`.
-   - Eventos de Nuvem Atendidos: `EnviarDataHora`, `ReceberRegistros`, `EnviarListaPessoas`, `ListarPessoas`, `CapturarDigital`, `EnviarEmpregador`, `ReceberEmpregador`.
+   - Eventos de Nuvem Atendidos: `EnviarDataHora`, `ReceberRegistros`, `EnviarListaPessoas`, `ListarPessoas`, `CapturarDigital`, `EnviarEmpregador`, `ReceberEmpregador`, `ReceberDigitais`.
 
 ---
 
@@ -264,7 +266,20 @@ secullum-agent.exe equipment:get-employer 3
 
 ---
 
-### Passo 8: Sincronização de Data e Hora
+### Passo 8: Puxar Digitais Cadastradas no Relógio para a Nuvem (ReceberDigitais)
+Varre as impressões digitais cadastradas na memória física do relógio (Henry ou Control iD), decodifica os templates biométricos nativos (Suprema / Innovatrics), extrai o dedo e código correspondente, e sincroniza os templates diretamente com a nuvem do Secullum RH via SignalR Hub:
+```bash
+# Puxar todas as digitais cadastradas no relógio de ponto #2:
+secullum-agent.exe equipment:receive-biometrics 2
+
+# Aliases equivalentes:
+secullum-agent.exe equipment:puxar-digitais 2
+secullum-agent.exe equipment:get-biometrics 2
+```
+
+---
+
+### Passo 9: Sincronização de Data e Hora
 Ajusta o relógio interno do REP via protocolo proprietário nativo:
 ```bash
 secullum-agent.exe equipment:sync-time 3
@@ -272,7 +287,7 @@ secullum-agent.exe equipment:sync-time 3
 
 ---
 
-### Passo 9: Captura no Leitor Biométrico USB de Mesa
+### Passo 10: Captura no Leitor Biométrico USB de Mesa
 ```bash
 # 1. Escanear portas USB para detectar leitores conectados:
 secullum-agent.exe biometric:scan
@@ -286,7 +301,7 @@ secullum-agent.exe biometric:capture 13
 
 ---
 
-### Passo 10: Executar o Agente em Tempo Real (Foreground)
+### Passo 11: Executar o Agente em Tempo Real (Foreground)
 Conecta ao WebSocket da nuvem, processa requisições instantâneas e mantém a auto-coleta periódica a cada 60s:
 ```bash
 secullum-agent.exe connect
@@ -295,7 +310,7 @@ secullum-agent.exe connect
 
 ---
 
-### Passo 11: Executar em Segundo Plano (Daemon / Serviço)
+### Passo 12: Executar em Segundo Plano (Daemon / Serviço)
 Para servidores ou máquinas de produção onde o terminal não deve ficar aberto:
 ```bash
 # Iniciar o agente em processo silencioso desanexado:
@@ -313,7 +328,7 @@ secullum-agent.exe daemon:stop
 
 ---
 
-### Passo 12: Instalar como Serviço Persistente do Sistema Operacional
+### Passo 13: Instalar como Serviço Persistente do Sistema Operacional
 Configura a inicialização automática junto com o boot da máquina:
 - **No Windows:** Cria uma Tarefa Agendada do Windows (`SecullumAgentCLI`) em modo de privilégio máximo com inicialização no logon.
 - **No Linux:** Cria uma unidade `systemd` (`/etc/systemd/system/secullum-agent.service`) com auto-restart em caso de falha.
@@ -328,7 +343,7 @@ secullum-agent.exe daemon:uninstall
 
 ---
 
-### Passo 13: Painel de Monitoramento ao Vivo (Dashboard Visual)
+### Passo 14: Painel de Monitoramento ao Vivo (Dashboard Visual)
 Interface de monitoramento estilo terminal com atualização a cada 3 segundos:
 ```bash
 secullum-agent.exe monitor -i 3
@@ -424,6 +439,9 @@ node scripts/build.js
 | `equipment:sync-time <id>` | Sincroniza a data e hora do relógio via protocolo nativo do fabricante. |
 | `equipment:collect <id>` | Coleta as marcações (AFD) a partir do último NSR e faz upload para a nuvem. |
 | `equipment:send-employees <id>` | Transmite os colaboradores cadastrados na nuvem para a memória do relógio. |
+| `equipment:send-employer <id>` | Transmite os dados do empregador (Razão Social, CNPJ/CPF, CEI) para o relógio. |
+| `equipment:get-employer <id>` | Consulta os dados do empregador gravados na memória do relógio de ponto. |
+| `equipment:receive-biometrics <id>` | Puxa as digitais do relógio e sincroniza com a nuvem (alias: `equipment:puxar-digitais`). |
 | `biometric` | Exibe o status e leitor biométrico de mesa ativo. |
 | `biometric:scan` | Escaneia portas USB em busca de leitores de mesa homologados. |
 | `biometric:select <id>` | Define o leitor biométrico ativo (-1, 0, 9, 16, 2, 3). |

@@ -25,7 +25,7 @@ Este projeto é uma alternativa de código aberto, **100% autônoma e independen
 
 ### 2. Clonando o Repositório
 ```bash
-git clone https://github.com/SEU_USUARIO/secullum-agent-cli.git
+git clone https://github.com/zwlucas/secullum-agent-cli.git
 cd secullum-agent-cli
 ```
 

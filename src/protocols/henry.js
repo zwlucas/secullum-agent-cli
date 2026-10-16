@@ -869,6 +869,176 @@ async function sendHenryCommand(ip, port = 3000, cmd = 'RH', params = '', timeou
   });
 }
 
+/**
+ * Parse a Henry RD response packet and extract biometric templates.
+ * Response format: 33+RD+000+D]<ref>}<numTemplates>}<fingerIdx>{<bytes>...
+ * Discovered via REA from Secullum.Comunicacao.HenryRepComunicacao.ExtrairTemplatesBuffer.
+ * @param {Buffer} buffer - Decrypted response buffer
+ * @returns {Array<{ fingerIndex: number, template: Buffer }>}
+ */
+function parseHenryBiometricResponse(buffer) {
+  const templates = [];
+  let pos = 0;
+
+  while (pos < buffer.length) {
+    const braceIdx = buffer.indexOf(0x7b, pos); // '{'
+    if (braceIdx === -1) break;
+
+    const headerSlice = buffer.subarray(pos, braceIdx).toString('ascii');
+    const fingerMatch = headerSlice.match(/\}(\d+)$/);
+    const fingerIndex = fingerMatch ? parseInt(fingerMatch[1], 10) : 0;
+
+    const nextBrace = buffer.indexOf(0x7b, braceIdx + 1);
+    let templateEnd = nextBrace !== -1 ? nextBrace : buffer.length;
+
+    if (nextBrace !== -1) {
+      const lastCloseBrace = buffer.lastIndexOf(0x7d, nextBrace); // '}'
+      if (lastCloseBrace !== -1 && lastCloseBrace > braceIdx) {
+        templateEnd = lastCloseBrace;
+      }
+    }
+
+    const templateData = buffer.subarray(braceIdx + 1, templateEnd);
+    if (templateData.length > 0) {
+      templates.push({
+        fingerIndex,
+        template: templateData,
+      });
+    }
+
+    pos = templateEnd;
+  }
+
+  return templates;
+}
+
+/**
+ * Receive registered biometric fingerprint templates from a Henry REP clock ("RD" command).
+ * Discovered via REA from Secullum.Comunicacao.HenryRepComunicacao.ReceberDigitais.
+ * @param {string} ip
+ * @param {number} [port=3000]
+ * @param {Array<object>} [employees=[]] - Employee list with Id, Nome, and Folha/Pis
+ * @param {string} [password=""]
+ * @param {function} [onProgress] - Optional progress callback (current, total)
+ * @returns {Promise<{ ok: boolean, biometrics: Array<object>, count: number, latencyMs: number, error?: string }>}
+ */
+async function receiveHenryBiometrics(ip, port = 3000, employees = [], password = '', onProgress = null) {
+  const start = Date.now();
+  return new Promise((resolve) => {
+    const sock = net.createConnection({ host: ip, port, timeout: 30000 });
+    let resolved = false;
+
+    const finish = (result) => {
+      if (!resolved) {
+        resolved = true;
+        sock.destroy();
+        resolve(result);
+      }
+    };
+
+    sock.on('timeout', () => finish({ ok: false, biometrics: [], count: 0, latencyMs: Date.now() - start, error: 'Connection timeout' }));
+    sock.on('error', (err) => finish({ ok: false, biometrics: [], count: 0, latencyMs: Date.now() - start, error: err.message }));
+
+    sock.on('connect', async () => {
+      try {
+        const exchange = (buf) =>
+          new Promise((res, rej) => {
+            let received = Buffer.alloc(0);
+            const onData = (data) => {
+              received = Buffer.concat([received, data]);
+              if (received.length >= 3) {
+                const pLen = received[1] | (received[2] << 8);
+                const expectedTotal = pLen + 5;
+                if (received.length >= expectedTotal) {
+                  sock.off('data', onData);
+                  sock.off('error', rej);
+                  res(received);
+                }
+              }
+            };
+            sock.on('data', onData);
+            sock.once('error', rej);
+            sock.write(buf);
+          });
+
+        let isAdvanced = false;
+        const probe = await exchange(buildHenryFrame('RH'));
+        const parsedProbe = parseHenryFrame(probe);
+
+        if (!parsedProbe.ok || parsedProbe.cmd !== 'RH' || password) {
+          const authRes = await authenticateHenrySession(sock, password);
+          if (authRes.ok) isAdvanced = true;
+        }
+
+        const biometrics = [];
+        const total = employees.length;
+
+        for (let i = 0; i < total; i++) {
+          const emp = employees[i];
+          const rawRef = emp.NumeroIdentificador
+            || (emp.NumeroFolha ? String(emp.NumeroFolha).replace(/\D/g, '') : null)
+            || emp.Id;
+          const cleanRef = String(rawRef).replace(/^0+/, '') || '1';
+
+          if (typeof onProgress === 'function') {
+            onProgress(i + 1, total, emp.Nome || cleanRef);
+          }
+
+          const cmdStr = `33+RD+00+D]${cleanRef}`;
+          let respBuf;
+
+          if (isAdvanced) {
+            const enc = aesEncryptHenry(cmdStr, HEXA_CHAVE_AES);
+            respBuf = await exchange(frameRawPayload(enc));
+          } else {
+            respBuf = await exchange(buildHenryFrame('RD', `D]${cleanRef}`));
+          }
+
+          let dec;
+          if (isAdvanced) {
+            const pLen = respBuf[1] | (respBuf[2] << 8);
+            dec = aesDecryptHenry(respBuf.subarray(3, 3 + pLen), HEXA_CHAVE_AES);
+          } else {
+            dec = respBuf.subarray(3, respBuf.length - 2);
+          }
+
+          const statusStr = dec.subarray(0, 30).toString('ascii');
+          // If response starts with 33+RD+000, templates are present
+          if (statusStr.includes('+000')) {
+            const extracted = parseHenryBiometricResponse(dec);
+            extracted.forEach((item, tIdx) => {
+              const fingerIdx = item.fingerIndex || tIdx;
+              biometrics.push({
+                PessoaId: emp.Id,
+                Tipo: 0, // Suprema default in Secullum
+                Template: item.template.toString('base64'),
+                TemplateCodigo: `${cleanRef}-${fingerIdx}`,
+                Dedo: fingerIdx,
+                Qualidade: 100,
+                Imagem: null,
+                TemplateStorageId: null,
+                Nome: emp.Nome,
+                Documento: emp.Cpf || emp.NumeroPis || '',
+              });
+            });
+          }
+          // Error 26 (Index não encontrado) or other errors mean no finger enrolled for this user
+          await new Promise((r) => setTimeout(r, 40));
+        }
+
+        finish({
+          ok: true,
+          biometrics,
+          count: biometrics.length,
+          latencyMs: Date.now() - start,
+        });
+      } catch (err) {
+        finish({ ok: false, biometrics: [], count: 0, latencyMs: Date.now() - start, error: err.message });
+      }
+    });
+  });
+}
+
 module.exports = {
   STX,
   ETX,
@@ -886,6 +1056,8 @@ module.exports = {
   sendHenryEmployees,
   sendHenryEmployer,
   receiveHenryEmployer,
+  parseHenryBiometricResponse,
+  receiveHenryBiometrics,
   syncHenryDateTime,
   sendHenryCommand,
 };

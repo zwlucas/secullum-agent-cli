@@ -62,6 +62,7 @@ const {
   equipmentSendEmployeesCommand,
   equipmentSendEmployerCommand,
   equipmentReceiveEmployerCommand,
+  equipmentReceiveBiometricsCommand,
 } = require('../src/commands/equipment');
 const { connectCommand } = require('../src/commands/connect');
 const { monitorCommand } = require('../src/commands/monitor');
@@ -109,6 +110,7 @@ ${colors.bold('EQUIPMENT & MANUFACTURER PROTOCOLS:')}
   ${colors.green('equipment:send-employees <id>')} Transmit employee list from cloud to REP hardware
   ${colors.green('equipment:send-employer <id>')}  Transmit employer data (DadosEmpregador) to REP hardware
   ${colors.green('equipment:get-employer <id>')}   Query employer data currently stored in REP hardware
+  ${colors.green('equipment:receive-biometrics <id>')} Pull enrolled fingerprint templates from REP to cloud (ReceberDigitais)
 
 ${colors.bold('DESKTOP USB BIOMETRIC READERS:')}
   ${colors.green('biometric')}                Show active biometric reader and hardware connection
@@ -276,6 +278,14 @@ async function main() {
     case 'equipment:receive-employer':
     case 'equipment:obter-empregador':
       await equipmentReceiveEmployerCommand(extraArgs[0]);
+      break;
+
+    case 'equipment:receive-biometrics':
+    case 'equipment:get-biometrics':
+    case 'equipment:puxar-digitais':
+    case 'equipment:receber-digitais':
+    case 'equipment:biometrics':
+      await equipmentReceiveBiometricsCommand(extraArgs[0]);
       break;
 
     case 'biometric':

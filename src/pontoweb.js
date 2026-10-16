@@ -237,6 +237,75 @@ async function fetchEmployer(equipId, options = {}) {
   };
 }
 
+/**
+ * Upload enrolled biometric templates (ReceberDigitais) to Secullum Cloud via SignalR Hub.
+ * Discovered via REA from Secullum.PontoWeb.ServicoComunicacao.Services.ComunicacaoService.ReceberDigitais:
+ *   1. Hub 'Comunicacao', Method 'InformarAtualizarDigitais' ([biometrics, tipoBiometria, equipId])
+ *   2. Hub 'Comunicacao', Method 'InformarDigitaisRecebidas' in chunks of 25 ([chunk, equipId])
+ *   3. Hub 'Comunicacao', Method 'InformarTerminoComunicacao' ([equipId, ''])
+ * @param {number|string} equipId
+ * @param {Array<object>} biometrics - List of DadosPessoaBiometria
+ * @param {number} [tipoBiometria=0] - 0: Suprema (Henry), 16: Innovatrics (Control iD)
+ * @param {object} [existingGateway=null] - Active RealTimeGateway instance if already connected
+ * @returns {Promise<{ ok: boolean, count: number, error?: string }>}
+ */
+async function uploadBiometrics(equipId, biometrics = [], tipoBiometria = 0, existingGateway = null) {
+  const { RealTimeGateway } = require('./realtime');
+  const numEquipId = Number(equipId);
+
+  let gateway = existingGateway;
+  let ownsGateway = false;
+
+  try {
+    if (!gateway || !gateway.isAuthenticated) {
+      ownsGateway = true;
+      gateway = new RealTimeGateway({
+        equipments: [numEquipId],
+        autoReconnect: false,
+      });
+      await gateway.connect();
+      // Brief wait to ensure registration message flushed
+      await new Promise((r) => setTimeout(r, 500));
+    }
+
+    // 1. Inform biometrics update and type
+    gateway.sendHubMethod('Comunicacao', 'InformarAtualizarDigitais', [
+      biometrics,
+      Number(tipoBiometria),
+      numEquipId,
+    ]);
+
+    // 2. Transmit biometrics in chunks of 25
+    const chunkSize = 25;
+    for (let i = 0; i < biometrics.length; i += chunkSize) {
+      const chunk = biometrics.slice(i, i + chunkSize);
+      gateway.sendHubMethod('Comunicacao', 'InformarDigitaisRecebidas', [
+        chunk,
+        numEquipId,
+      ]);
+    }
+
+    // 3. Notify completion of biometrics receiving
+    gateway.sendHubMethod('Comunicacao', 'InformarTerminoComunicacao', [
+      numEquipId,
+      '',
+    ]);
+
+    // Give websocket a moment to flush outbound frames before disconnecting if transient
+    if (ownsGateway) {
+      await new Promise((r) => setTimeout(r, 1000));
+      gateway.disconnect();
+    }
+
+    return { ok: true, count: biometrics.length };
+  } catch (err) {
+    if (ownsGateway && gateway) {
+      try { gateway.disconnect(); } catch {}
+    }
+    return { ok: false, count: 0, error: err.message };
+  }
+}
+
 module.exports = {
   PONTOWEB_BASE_URL,
   AGENT_VERSION,
@@ -250,5 +319,6 @@ module.exports = {
   uploadPunchRecords,
   fetchEmployees,
   fetchEmployer,
+  uploadBiometrics,
 };
 
