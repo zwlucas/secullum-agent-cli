@@ -181,15 +181,122 @@ function aesEncryptHenry(plainText, key = HEXA_CHAVE_AES) {
  * @returns {Buffer}
  */
 function aesDecryptHenry(encBuffer, key = HEXA_CHAVE_AES) {
-  const iv = encBuffer.subarray(0, 16);
-  const ciphertext = encBuffer.subarray(16);
-  const decipher = crypto.createDecipheriv('aes-128-cbc', key, iv);
-  decipher.setAutoPadding(false);
-  const plain = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+  if (!Buffer.isBuffer(encBuffer) || encBuffer.length < 16) {
+    return Buffer.alloc(0);
+  }
 
-  let end = plain.length;
-  while (end > 0 && plain[end - 1] === 0x00) end--;
-  return plain.subarray(0, end);
+  const iv = encBuffer.subarray(0, 16);
+  let ciphertext = encBuffer.subarray(16);
+
+  if (ciphertext.length === 0) {
+    return Buffer.alloc(0);
+  }
+
+  // Ciphertext must be a multiple of 16-byte block size for CBC mode without padding
+  const rem = ciphertext.length % 16;
+  if (rem !== 0) {
+    ciphertext = ciphertext.subarray(0, ciphertext.length - rem);
+  }
+
+  if (ciphertext.length === 0) {
+    return Buffer.alloc(0);
+  }
+
+  try {
+    const decipher = crypto.createDecipheriv('aes-128-cbc', key, iv);
+    decipher.setAutoPadding(false);
+    const plain = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+
+    let end = plain.length;
+    while (end > 0 && plain[end - 1] === 0x00) end--;
+    return plain.subarray(0, end);
+  } catch {
+    return Buffer.alloc(0);
+  }
+}
+
+/**
+ * Exchange a framed Henry 8x protocol packet over a net.Socket.
+ * Continuously accumulates streaming TCP chunks until the complete packet
+ * (STX + lenLow + lenHigh + payloadLen bytes + Checksum + ETX) has arrived.
+ *
+ * Discovered via REA from Secullum.Comunicacao.HenryRepComunicacao.LerPacote / ReadData.
+ *
+ * @param {net.Socket} sock
+ * @param {Buffer} [sendBuffer] - Buffer to transmit
+ * @param {number} [timeoutMs=15000] - Timeout in milliseconds
+ * @returns {Promise<Buffer>} - Full framed packet Buffer
+ */
+function exchangeHenryFrame(sock, sendBuffer = null, timeoutMs = 15000) {
+  return new Promise((resolve, reject) => {
+    let timer = null;
+    let accumulator = Buffer.alloc(0);
+
+    const cleanup = () => {
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
+      sock.off('data', onData);
+      sock.off('error', onError);
+      sock.off('close', onClose);
+    };
+
+    const onError = (err) => {
+      cleanup();
+      reject(err);
+    };
+
+    const onClose = () => {
+      cleanup();
+      reject(new Error('Conexão TCP encerrada pelo equipamento Henry antes de receber o pacote completo.'));
+    };
+
+    const onData = (chunk) => {
+      accumulator = Buffer.concat([accumulator, chunk]);
+
+      // Locate STX delimiter (0x02)
+      const stxIdx = accumulator.indexOf(STX);
+      if (stxIdx === -1) {
+        if (accumulator.length > 512) {
+          accumulator = Buffer.alloc(0);
+        }
+        return;
+      }
+
+      // Discard any bytes before STX
+      if (stxIdx > 0) {
+        accumulator = accumulator.subarray(stxIdx);
+      }
+
+      // Wait until length header (lenLow, lenHigh) is available
+      if (accumulator.length < 3) {
+        return;
+      }
+
+      const pLen = accumulator[1] | (accumulator[2] << 8);
+      const expectedTotal = pLen + 5; // STX (1) + lenLow/lenHigh (2) + payload (pLen) + CS (1) + ETX (1)
+
+      if (accumulator.length >= expectedTotal) {
+        const fullFrame = Buffer.from(accumulator.subarray(0, expectedTotal));
+        cleanup();
+        resolve(fullFrame);
+      }
+    };
+
+    timer = setTimeout(() => {
+      cleanup();
+      reject(new Error(`Timeout (${timeoutMs}ms) aguardando resposta do equipamento Henry.`));
+    }, timeoutMs);
+
+    sock.on('data', onData);
+    sock.once('error', onError);
+    sock.once('close', onClose);
+
+    if (sendBuffer && sendBuffer.length > 0) {
+      sock.write(sendBuffer);
+    }
+  });
 }
 
 /**
@@ -199,20 +306,8 @@ function aesDecryptHenry(encBuffer, key = HEXA_CHAVE_AES) {
  * @returns {Promise<{ ok: boolean, error?: string }>}
  */
 async function authenticateHenrySession(sock, password = '') {
-  const exchange = (buf) =>
-    new Promise((resolve, reject) => {
-      sock.write(buf);
-      const onData = (data) => {
-        sock.off('data', onData);
-        sock.off('error', reject);
-        resolve(data);
-      };
-      sock.once('data', onData);
-      sock.once('error', reject);
-    });
-
   // 1. Send RA (Request RSA Public Key)
-  const resRA = await exchange(buildHenryFrame('RA'));
+  const resRA = await exchangeHenryFrame(sock, buildHenryFrame('RA'));
   const parsedRA = parseHenryFrame(resRA);
   if (!parsedRA.ok) {
     return { ok: false, error: `Failed to receive RA: ${parsedRA.error}` };
@@ -245,7 +340,7 @@ async function authenticateHenrySession(sock, password = '') {
   const eaFrame = frameRawPayload(Buffer.from(eaB64, 'ascii'));
 
   // 4. Send EA frame
-  const rawEA = await exchange(eaFrame);
+  const rawEA = await exchangeHenryFrame(sock, eaFrame);
   if (rawEA.length < 5) {
     return { ok: false, error: 'Invalid EA response length' };
   }
@@ -376,22 +471,10 @@ async function collectHenryRecords(ip, port = 3000, startNsr = 0, count = 100, p
 
     sock.on('connect', async () => {
       try {
-        const exchange = (buf) =>
-          new Promise((res, rej) => {
-            sock.write(buf);
-            const onData = (data) => {
-              sock.off('data', onData);
-              sock.off('error', rej);
-              res(data);
-            };
-            sock.once('data', onData);
-            sock.once('error', rej);
-          });
-
         let isAdvanced = false;
 
         // 1. Probe clock status via standard frame
-        const probeResp = await exchange(buildHenryFrame('RH'));
+        const probeResp = await exchangeHenryFrame(sock, buildHenryFrame('RH'));
         const parsedProbe = parseHenryFrame(probeResp);
 
         // If clock replied with binary or didn't answer cleanly, or password given, attempt RSA/AES handshake
@@ -408,9 +491,9 @@ async function collectHenryRecords(ip, port = 3000, startNsr = 0, count = 100, p
 
         if (isAdvanced) {
           const encPayload = aesEncryptHenry(cmdStr, HEXA_CHAVE_AES);
-          respBuf = await exchange(frameRawPayload(encPayload));
+          respBuf = await exchangeHenryFrame(sock, frameRawPayload(encPayload));
         } else {
-          respBuf = await exchange(buildHenryFrame('RR', `N]${count}]${startNsr}`));
+          respBuf = await exchangeHenryFrame(sock, buildHenryFrame('RR', `N]${count}]${startNsr}`));
         }
 
         let payloadText = '';
@@ -487,20 +570,8 @@ async function sendHenryEmployees(ip, port = 3000, employees = [], password = ''
 
     sock.on('connect', async () => {
       try {
-        const exchange = (buf) =>
-          new Promise((res, rej) => {
-            sock.write(buf);
-            const onData = (data) => {
-              sock.off('data', onData);
-              sock.off('error', rej);
-              res(data);
-            };
-            sock.once('data', onData);
-            sock.once('error', rej);
-          });
-
         let isAdvanced = false;
-        const probeResp = await exchange(buildHenryFrame('RH'));
+        const probeResp = await exchangeHenryFrame(sock, buildHenryFrame('RH'));
         const parsedProbe = parseHenryFrame(probeResp);
 
         if (!parsedProbe.ok || parsedProbe.cmd !== 'RH' || password) {
@@ -534,9 +605,9 @@ async function sendHenryEmployees(ip, port = 3000, employees = [], password = ''
           let respBuf;
           if (isAdvanced) {
             const enc = aesEncryptHenry(cmdStr, HEXA_CHAVE_AES);
-            respBuf = await exchange(frameRawPayload(enc));
+            respBuf = await exchangeHenryFrame(sock, frameRawPayload(enc));
           } else {
-            respBuf = await exchange(buildHenryFrame(cmdName, `${chunk.length}]${itemsStr}`));
+            respBuf = await exchangeHenryFrame(sock, buildHenryFrame(cmdName, `${chunk.length}]${itemsStr}`));
           }
 
           let payload = '';
@@ -593,20 +664,8 @@ async function syncHenryDateTime(ip, port = 3000, date = new Date(), password = 
 
     sock.on('connect', async () => {
       try {
-        const exchange = (buf) =>
-          new Promise((res, rej) => {
-            sock.write(buf);
-            const onData = (data) => {
-              sock.off('data', onData);
-              sock.off('error', rej);
-              res(data);
-            };
-            sock.once('data', onData);
-            sock.once('error', rej);
-          });
-
         let isAdvanced = false;
-        const probe = await exchange(buildHenryFrame('RH'));
+        const probe = await exchangeHenryFrame(sock, buildHenryFrame('RH'));
         const parsedProbe = parseHenryFrame(probe);
 
         if (!parsedProbe.ok || parsedProbe.cmd !== 'RH' || password) {
@@ -619,9 +678,9 @@ async function syncHenryDateTime(ip, port = 3000, date = new Date(), password = 
 
         if (isAdvanced) {
           const enc = aesEncryptHenry(cmdStr, HEXA_CHAVE_AES);
-          respBuf = await exchange(frameRawPayload(enc));
+          respBuf = await exchangeHenryFrame(sock, frameRawPayload(enc));
         } else {
-          respBuf = await exchange(buildHenryFrame('EH', param));
+          respBuf = await exchangeHenryFrame(sock, buildHenryFrame('EH', param));
         }
 
         const latencyMs = Date.now() - start;
@@ -662,20 +721,8 @@ async function sendHenryEmployer(ip, port = 3000, employer, password = '') {
 
     sock.on('connect', async () => {
       try {
-        const exchange = (buf) =>
-          new Promise((res, rej) => {
-            sock.write(buf);
-            const onData = (data) => {
-              sock.off('data', onData);
-              sock.off('error', rej);
-              res(data);
-            };
-            sock.once('data', onData);
-            sock.once('error', rej);
-          });
-
         let isAdvanced = false;
-        const probe = await exchange(buildHenryFrame('RH'));
+        const probe = await exchangeHenryFrame(sock, buildHenryFrame('RH'));
         const parsedProbe = parseHenryFrame(probe);
 
         if (!parsedProbe.ok || parsedProbe.cmd !== 'RH' || password) {
@@ -704,9 +751,9 @@ async function sendHenryEmployer(ip, port = 3000, employer, password = '') {
         let respBuf;
         if (isAdvanced) {
           const enc = aesEncryptHenry(cmdStr, HEXA_CHAVE_AES);
-          respBuf = await exchange(frameRawPayload(enc));
+          respBuf = await exchangeHenryFrame(sock, frameRawPayload(enc));
         } else {
-          respBuf = await exchange(buildHenryFrame('EE', payloadStr));
+          respBuf = await exchangeHenryFrame(sock, buildHenryFrame('EE', payloadStr));
         }
 
         let payload = '';
@@ -757,20 +804,8 @@ async function receiveHenryEmployer(ip, port = 3000, password = '') {
 
     sock.on('connect', async () => {
       try {
-        const exchange = (buf) =>
-          new Promise((res, rej) => {
-            sock.write(buf);
-            const onData = (data) => {
-              sock.off('data', onData);
-              sock.off('error', rej);
-              res(data);
-            };
-            sock.once('data', onData);
-            sock.once('error', rej);
-          });
-
         let isAdvanced = false;
-        const probe = await exchange(buildHenryFrame('RH'));
+        const probe = await exchangeHenryFrame(sock, buildHenryFrame('RH'));
         const parsedProbe = parseHenryFrame(probe);
 
         if (!parsedProbe.ok || parsedProbe.cmd !== 'RH' || password) {
@@ -782,9 +817,9 @@ async function receiveHenryEmployer(ip, port = 3000, password = '') {
         let respBuf;
         if (isAdvanced) {
           const enc = aesEncryptHenry(cmdStr, HEXA_CHAVE_AES);
-          respBuf = await exchange(frameRawPayload(enc));
+          respBuf = await exchangeHenryFrame(sock, frameRawPayload(enc));
         } else {
-          respBuf = await exchange(buildHenryFrame('RE'));
+          respBuf = await exchangeHenryFrame(sock, buildHenryFrame('RE'));
         }
 
         let respStr = '';
@@ -853,17 +888,18 @@ async function sendHenryCommand(ip, port = 3000, cmd = 'RH', params = '', timeou
     sock.on('timeout', () => finish({ ok: false, payload: '', latencyMs: Date.now() - start, error: 'Connection timeout' }));
     sock.on('error', (err) => finish({ ok: false, payload: '', latencyMs: Date.now() - start, error: err.message }));
 
-    sock.on('connect', () => {
-      sock.write(frame);
-    });
-
-    sock.on('data', (data) => {
-      const latencyMs = Date.now() - start;
-      const parsed = parseHenryFrame(data);
-      if (parsed.ok) {
-        finish({ ok: true, payload: parsed.payload, params: parsed.params, latencyMs });
-      } else {
-        finish({ ok: false, payload: data.toString('ascii'), latencyMs, error: parsed.error });
+    sock.on('connect', async () => {
+      try {
+        const respBuf = await exchangeHenryFrame(sock, frame, timeout);
+        const latencyMs = Date.now() - start;
+        const parsed = parseHenryFrame(respBuf);
+        if (parsed.ok) {
+          finish({ ok: true, payload: parsed.payload, params: parsed.params, latencyMs });
+        } else {
+          finish({ ok: false, payload: respBuf.toString('ascii'), latencyMs, error: parsed.error });
+        }
+      } catch (err) {
+        finish({ ok: false, payload: '', latencyMs: Date.now() - start, error: err.message });
       }
     });
   });
@@ -941,28 +977,8 @@ async function receiveHenryBiometrics(ip, port = 3000, employees = [], password 
 
     sock.on('connect', async () => {
       try {
-        const exchange = (buf) =>
-          new Promise((res, rej) => {
-            let received = Buffer.alloc(0);
-            const onData = (data) => {
-              received = Buffer.concat([received, data]);
-              if (received.length >= 3) {
-                const pLen = received[1] | (received[2] << 8);
-                const expectedTotal = pLen + 5;
-                if (received.length >= expectedTotal) {
-                  sock.off('data', onData);
-                  sock.off('error', rej);
-                  res(received);
-                }
-              }
-            };
-            sock.on('data', onData);
-            sock.once('error', rej);
-            sock.write(buf);
-          });
-
         let isAdvanced = false;
-        const probe = await exchange(buildHenryFrame('RH'));
+        const probe = await exchangeHenryFrame(sock, buildHenryFrame('RH'));
         const parsedProbe = parseHenryFrame(probe);
 
         if (!parsedProbe.ok || parsedProbe.cmd !== 'RH' || password) {
@@ -989,9 +1005,9 @@ async function receiveHenryBiometrics(ip, port = 3000, employees = [], password 
 
           if (isAdvanced) {
             const enc = aesEncryptHenry(cmdStr, HEXA_CHAVE_AES);
-            respBuf = await exchange(frameRawPayload(enc));
+            respBuf = await exchangeHenryFrame(sock, frameRawPayload(enc));
           } else {
-            respBuf = await exchange(buildHenryFrame('RD', `D]${cleanRef}`));
+            respBuf = await exchangeHenryFrame(sock, buildHenryFrame('RD', `D]${cleanRef}`));
           }
 
           let dec;
@@ -1073,28 +1089,8 @@ async function deleteHenryEmployees(ip, port = 3000, employees = [], password = 
 
     sock.on('connect', async () => {
       try {
-        const exchange = (buf) =>
-          new Promise((res, rej) => {
-            let received = Buffer.alloc(0);
-            const onData = (data) => {
-              received = Buffer.concat([received, data]);
-              if (received.length >= 3) {
-                const pLen = received[1] | (received[2] << 8);
-                const expectedTotal = pLen + 5;
-                if (received.length >= expectedTotal) {
-                  sock.off('data', onData);
-                  sock.off('error', rej);
-                  res(received);
-                }
-              }
-            };
-            sock.on('data', onData);
-            sock.once('error', rej);
-            sock.write(buf);
-          });
-
         let isAdvanced = false;
-        const probeResp = await exchange(buildHenryFrame('RH'));
+        const probeResp = await exchangeHenryFrame(sock, buildHenryFrame('RH'));
         const parsedProbe = parseHenryFrame(probeResp);
 
         if (!parsedProbe.ok || parsedProbe.cmd !== 'RH' || password) {
@@ -1126,9 +1122,9 @@ async function deleteHenryEmployees(ip, port = 3000, employees = [], password = 
           let respBuf;
           if (isAdvanced) {
             const enc = aesEncryptHenry(cmdStr, HEXA_CHAVE_AES);
-            respBuf = await exchange(frameRawPayload(enc));
+            respBuf = await exchangeHenryFrame(sock, frameRawPayload(enc));
           } else {
-            respBuf = await exchange(buildHenryFrame(cmdName, `${chunk.length}]${itemsStr}`));
+            respBuf = await exchangeHenryFrame(sock, buildHenryFrame(cmdName, `${chunk.length}]${itemsStr}`));
           }
 
           deletedCount += chunk.length;
@@ -1151,9 +1147,9 @@ async function deleteHenryEmployees(ip, port = 3000, employees = [], password = 
           const edCmd = `33+ED+00+E]${cleanRef}`;
           if (isAdvanced) {
             const enc = aesEncryptHenry(edCmd, HEXA_CHAVE_AES);
-            await exchange(frameRawPayload(enc));
+            await exchangeHenryFrame(sock, frameRawPayload(enc));
           } else {
-            await exchange(buildHenryFrame('ED', `E]${cleanRef}`));
+            await exchangeHenryFrame(sock, buildHenryFrame('ED', `E]${cleanRef}`));
           }
 
           await new Promise((r) => setTimeout(r, 40));
@@ -1194,28 +1190,8 @@ async function clearHenryEmployees(ip, port = 3000, password = '') {
 
     sock.on('connect', async () => {
       try {
-        const exchange = (buf) =>
-          new Promise((res, rej) => {
-            let received = Buffer.alloc(0);
-            const onData = (data) => {
-              received = Buffer.concat([received, data]);
-              if (received.length >= 3) {
-                const pLen = received[1] | (received[2] << 8);
-                const expectedTotal = pLen + 5;
-                if (received.length >= expectedTotal) {
-                  sock.off('data', onData);
-                  sock.off('error', rej);
-                  res(received);
-                }
-              }
-            };
-            sock.on('data', onData);
-            sock.once('error', rej);
-            sock.write(buf);
-          });
-
         let isAdvanced = false;
-        const probeResp = await exchange(buildHenryFrame('RH'));
+        const probeResp = await exchangeHenryFrame(sock, buildHenryFrame('RH'));
         const parsedProbe = parseHenryFrame(probeResp);
 
         if (!parsedProbe.ok || parsedProbe.cmd !== 'RH' || password) {
@@ -1228,9 +1204,9 @@ async function clearHenryEmployees(ip, port = 3000, password = '') {
 
         if (isAdvanced) {
           const enc = aesEncryptHenry(cmdStr, HEXA_CHAVE_AES);
-          await exchange(frameRawPayload(enc));
+          await exchangeHenryFrame(sock, frameRawPayload(enc));
         } else {
-          await exchange(buildHenryFrame(cmdName, '1]L['));
+          await exchangeHenryFrame(sock, buildHenryFrame(cmdName, '1]L['));
         }
 
         finish({ ok: true, latencyMs: Date.now() - start });
@@ -1269,28 +1245,8 @@ async function getHenryPaperRollStatus(ip, port = 3000, password = '') {
 
     sock.on('connect', async () => {
       try {
-        const exchange = (buf) =>
-          new Promise((res, rej) => {
-            let received = Buffer.alloc(0);
-            const onData = (data) => {
-              received = Buffer.concat([received, data]);
-              if (received.length >= 3) {
-                const pLen = received[1] | (received[2] << 8);
-                const expectedTotal = pLen + 5;
-                if (received.length >= expectedTotal) {
-                  sock.off('data', onData);
-                  sock.off('error', rej);
-                  res(received);
-                }
-              }
-            };
-            sock.on('data', onData);
-            sock.once('error', rej);
-            sock.write(buf);
-          });
-
         let isAdvanced = false;
-        const probeResp = await exchange(buildHenryFrame('RH'));
+        const probeResp = await exchangeHenryFrame(sock, buildHenryFrame('RH'));
         const parsedProbe = parseHenryFrame(probeResp);
 
         if (!parsedProbe.ok || parsedProbe.cmd !== 'RH' || password) {
@@ -1306,12 +1262,12 @@ async function getHenryPaperRollStatus(ip, port = 3000, password = '') {
 
           if (isAdvanced) {
             const enc = aesEncryptHenry(cmdStr, HEXA_CHAVE_AES);
-            respBuf = await exchange(frameRawPayload(enc));
+            respBuf = await exchangeHenryFrame(sock, frameRawPayload(enc));
             const pLen = respBuf[1] | (respBuf[2] << 8);
             const dec = aesDecryptHenry(respBuf.subarray(3, 3 + pLen), HEXA_CHAVE_AES);
             return dec.toString('ascii');
           } else {
-            respBuf = await exchange(buildHenryFrame(cmdName, param));
+            respBuf = await exchangeHenryFrame(sock, buildHenryFrame(cmdName, param));
             return parseHenryFrame(respBuf).payload;
           }
         };
@@ -1395,6 +1351,7 @@ module.exports = {
   parseHenryFrame,
   aesEncryptHenry,
   aesDecryptHenry,
+  exchangeHenryFrame,
   authenticateHenrySession,
   formatHenryDateTimeParam,
   parseHenryAfdLine,
