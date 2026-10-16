@@ -35,6 +35,7 @@ O projeto conecta-se diretamente à **Nuvem Secullum (PontoWeb Cloud)** e aos **
 - 🧬 **Puxar Digitais do Relógio para a Nuvem (ReceberDigitais):** Extrai impressões digitais cadastradas na memória dos REPs (Henry, Control iD) com decodificação de templates nativos e sincroniza diretamente com a Nuvem Secullum via SignalR Hub.
 - 🏢 **Envio e Consulta de Dados do Empregador:** Transmite e consulta Razão Social, CNPJ/CPF, CEI/CAEPF e Endereço nos REPs (Portaria 1510/671).
 - 🧻 **Telemetria do Sensor de Bobina de Papel (EstadoBobina):** Monitora em tempo real o status da bobina de papel térmica dos relógios físicos (Henry e Control iD), reportando estados de *Normal*, *Pouco Papel* (com metragem restante e total de cortes) e *Sem Papel* (bloqueio de impressão) diretamente para a Nuvem Secullum via SignalR Hub (`InformarStatusBobina`).
+- 💾 **Coleta e Carga Offline via Pendrive (Modo USB):** Suporte completo à rotina offline oficial para relógios sem conexão de rede. Detecta automaticamente pendrives USB conectados no Windows e Linux, decodifica arquivos de marcação AFD (Portaria 1510 e Portaria 671) enviando as batidas à nuvem, e gera arquivos proprietários de carga USB (Henry, Control iD, Topdata, Proveu) para importação de funcionários no relógio.
 - 🖐️ **Captura Ativa no Leitor USB de Mesa:** Suporte a Suprema BioMini, BioMini Adv, Control iD iDBio, LC/Futronic e Nitgen com gauge de qualidade e extração de template ANSI/ISO 378.
 - ⏱️ **Sincronização de Data e Hora em Hardware:** Ajuste de relógio em microssegundos com protocolos criptografados nativos (Henry, Control iD, Topdata).
 - 🔍 **Sondagem de Rede em Tempo Real:** Medição de latência e detecção de status LAN via sockets TCP puros.
@@ -315,7 +316,31 @@ secullum-agent.exe equipment:estado-bobina 2
 
 ---
 
-### Passo 11: Sincronização de Data e Hora
+### Passo 11: Coleta e Carga Offline via Pendrive (Modo USB / Arquivo AFD)
+Para relógios de ponto instalados em locais sem rede Ethernet ou Wi-Fi (modo USB offline):
+
+```bash
+# 1. Listar pendrives e unidades removíveis conectadas no computador:
+secullum-agent.exe usb:drives
+
+# 2. Coletar batidas offline do pendrive / arquivo AFD e enviar para a Nuvem Secullum:
+secullum-agent.exe usb:collect 2
+# Ou informando o arquivo/pasta diretamente:
+secullum-agent.exe usb:collect 2 "E:\AFD000000000.txt"
+
+# 3. Gerar arquivos proprietários de carga de funcionários no pendrive para o relógio:
+secullum-agent.exe usb:export 2 "E:\"
+
+# 4. Gerar espelho local do arquivo AFD (Portaria 1510/671) via AfdService:
+secullum-agent.exe equipment:generate-afd 2
+```
+
+> [!TIP]
+> O comando `usb:export` reconhece automaticamente o fabricante do relógio cadastrado na nuvem (Henry: `COLAB.TXT`, Control iD: `usuarios.txt` / `users.json`, Topdata: `InnerRep.txt`, Proveu: `funcionarios.prv`) e gera os arquivos na estrutura exata requerida pelo firmware do equipamento.
+
+---
+
+### Passo 12: Sincronização de Data e Hora
 Ajusta o relógio interno do REP via protocolo proprietário nativo:
 ```bash
 secullum-agent.exe equipment:sync-time 3
@@ -323,7 +348,7 @@ secullum-agent.exe equipment:sync-time 3
 
 ---
 
-### Passo 12: Captura no Leitor Biométrico USB de Mesa
+### Passo 13: Captura no Leitor Biométrico USB de Mesa
 ```bash
 # 1. Escanear portas USB para detectar leitores conectados:
 secullum-agent.exe biometric:scan
@@ -337,7 +362,7 @@ secullum-agent.exe biometric:capture 13
 
 ---
 
-### Passo 13: Executar o Agente em Tempo Real (Foreground)
+### Passo 14: Executar o Agente em Tempo Real (Foreground)
 Conecta ao WebSocket da nuvem, processa requisições instantâneas e mantém a auto-coleta periódica a cada 60s:
 ```bash
 secullum-agent.exe connect
@@ -346,7 +371,7 @@ secullum-agent.exe connect
 
 ---
 
-### Passo 14: Executar em Segundo Plano (Daemon / Serviço)
+### Passo 15: Executar em Segundo Plano (Daemon / Serviço)
 Para servidores ou máquinas de produção onde o terminal não deve ficar aberto:
 ```bash
 # Iniciar o agente em processo silencioso desanexado:
@@ -364,7 +389,7 @@ secullum-agent.exe daemon:stop
 
 ---
 
-### Passo 15: Instalar como Serviço Persistente do Sistema Operacional
+### Passo 16: Instalar como Serviço Persistente do Sistema Operacional
 Configura a inicialização automática junto com o boot da máquina:
 - **No Windows:** Cria uma Tarefa Agendada do Windows (`SecullumAgentCLI`) em modo de privilégio máximo com inicialização no logon.
 - **No Linux:** Cria uma unidade `systemd` (`/etc/systemd/system/secullum-agent.service`) com auto-restart em caso de falha.
@@ -379,7 +404,7 @@ secullum-agent.exe daemon:uninstall
 
 ---
 
-### Passo 16: Painel de Monitoramento ao Vivo (Dashboard Visual)
+### Passo 17: Painel de Monitoramento ao Vivo (Dashboard Visual)
 Interface de monitoramento estilo terminal com atualização a cada 3 segundos:
 ```bash
 secullum-agent.exe monitor -i 3
@@ -489,6 +514,10 @@ node scripts/build.js
 | `equipment:get-employer <id>` | Consulta os dados do empregador gravados na memória do relógio de ponto. |
 | `equipment:receive-biometrics <id>` | Puxa as digitais do relógio e sincroniza com a nuvem (alias: `equipment:puxar-digitais`). |
 | `equipment:paper-roll <id>` | Consulta a telemetria do sensor de bobina de papel (EstadoBobina: Normal/Pouco Papel/Sem Papel) do relógio (aliases: `equipment:bobina`, `equipment:estado-bobina`). |
+| `usb:drives` | Lista todas as unidades removíveis e pendrives USB conectados no computador (alias: `usb:list`). |
+| `usb:collect [id] [caminho]` | Coleta e decodifica marcações offline de pendrive / arquivo AFD e envia à nuvem (aliases: `equipment:collect-usb`, `equipment:import-afd`). |
+| `usb:export <id> [caminho]` | Gera arquivos proprietários de carga de colaboradores para pendrive (aliases: `equipment:export-usb`, `equipment:carga-usb`). |
+| `equipment:generate-afd <id> [caminho]` | Gera espelho local do arquivo AFD (Portaria 1510/671) com cabeçalho e rodapé oficiais (alias: `afd:generate`). |
 | `biometric` | Exibe o status e leitor biométrico de mesa ativo. |
 | `biometric:scan` | Escaneia portas USB em busca de leitores de mesa homologados. |
 | `biometric:select <id>` | Define o leitor biométrico ativo (-1, 0, 9, 16, 2, 3). |

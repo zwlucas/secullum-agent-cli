@@ -85,6 +85,12 @@ const {
   daemonInstallCommand,
   daemonUninstallCommand,
 } = require('../src/commands/daemon');
+const {
+  usbListDrivesCommand,
+  equipmentCollectUsbCommand,
+  equipmentExportUsbCommand,
+  equipmentGenerateAfdCommand,
+} = require('../src/commands/usb');
 
 function printHelp() {
   console.log(`
@@ -117,6 +123,12 @@ ${colors.bold('EQUIPMENT & MANUFACTURER PROTOCOLS:')}
   ${colors.green('equipment:get-employer <id>')}   Query employer data currently stored in REP hardware
   ${colors.green('equipment:receive-biometrics <id>')} Pull enrolled fingerprint templates from REP to cloud (ReceberDigitais)
   ${colors.green('equipment:paper-roll <id>')}    Check paper roll sensor telemetry (EstadoBobina: Normal/Pouco Papel/Sem Papel)
+
+${colors.bold('OFFLINE & USB PENDRIVE (MODO USB):')}
+  ${colors.green('usb:drives')}               Scan and list connected removable USB flash drives / pendrives
+  ${colors.green('usb:collect [id] [caminho]')} Collect punches from USB pendrive / AFD file and upload to cloud
+  ${colors.green('usb:export <id> [caminho]')}  Export employee & employer charge files to USB pendrive for REP import
+  ${colors.green('equipment:generate-afd <id> [path]')} Generate Portaria 1510 / 671 compliant AFD mirror file (AfdService)
 
 ${colors.bold('DESKTOP USB BIOMETRIC READERS:')}
   ${colors.green('biometric')}                Show active biometric reader and hardware connection
@@ -316,6 +328,36 @@ async function main() {
     case 'equipment:estado-bobina':
     case 'equipment:status-bobina':
       await equipmentPaperRollCommand(extraArgs[0]);
+      break;
+
+    case 'usb:drives':
+    case 'usb:list':
+    case 'usb:pendrives':
+    case 'pendrives':
+      await usbListDrivesCommand();
+      break;
+
+    case 'usb:collect':
+    case 'usb:import':
+    case 'equipment:collect-usb':
+    case 'equipment:coleta-usb':
+    case 'equipment:import-afd':
+    case 'equipment:importar-afd':
+      await equipmentCollectUsbCommand(extraArgs[0], extraArgs.slice(1));
+      break;
+
+    case 'usb:export':
+    case 'usb:carga':
+    case 'equipment:export-usb':
+    case 'equipment:carga-usb':
+    case 'equipment:exportar-usb':
+      await equipmentExportUsbCommand(extraArgs[0], extraArgs.slice(1));
+      break;
+
+    case 'equipment:generate-afd':
+    case 'equipment:gerar-afd':
+    case 'afd:generate':
+      await equipmentGenerateAfdCommand(extraArgs[0], extraArgs.slice(1));
       break;
 
     case 'biometric':
