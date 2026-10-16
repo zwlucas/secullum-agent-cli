@@ -28,6 +28,22 @@ function getManufacturerFamily(typeId) {
 }
 
 /**
+ * Build options for Topdata protocol driver from equipment object.
+ * @param {object} eq
+ * @returns {object}
+ */
+function getTopdataOptions(eq) {
+  return {
+    chaveComunicacao: eq.chaveComunicacao || eq.senha || '**AUTENTICACAO**',
+    cpfResponsavel: eq.cpfResponsavel || '',
+    tipoId: eq.tipoId,
+    isV5: eq.tipoId === 45,
+    tipoBiometria: eq.tipoBiometria,
+    equipmentId: eq.id,
+  };
+}
+
+/**
  * Synchronize date and time with an equipment using its manufacturer-specific protocol.
  * @param {object} eq - Normalized equipment object
  * @param {Date} [date=new Date()]
@@ -52,7 +68,7 @@ async function syncEquipmentDateTime(eq, date = new Date()) {
       return { ...res, manufacturer: 'Control iD' };
     }
     case 'topdata': {
-      const res = await topdata.syncTopdataDateTime(ip, port, date);
+      const res = await topdata.syncTopdataDateTime(ip, port, date, getTopdataOptions(eq));
       return { ...res, manufacturer: 'Topdata' };
     }
     default: {
@@ -85,6 +101,10 @@ async function queryEquipmentStatus(eq) {
       const res = await controlid.getControlIdPaperRollStatus(ip, port, 'admin', password || 'admin');
       return { ...res, statusBobina: res.status, data: res, manufacturer: 'Control iD' };
     }
+    case 'topdata': {
+      const res = await topdata.queryTopdataStatus(ip, port, getTopdataOptions(eq));
+      return { ...res, statusBobina: res.status, data: res, manufacturer: 'Topdata' };
+    }
     default: {
       return { ok: false, manufacturer: 'Generic', latencyMs: 0, error: `Status telemetry for type #${eq.tipoId} not supported` };
     }
@@ -115,6 +135,10 @@ async function queryEquipmentPaperRoll(eq) {
     case 'controlid': {
       const res = await controlid.getControlIdPaperRollStatus(ip, port, 'admin', password || 'admin');
       return { ...res, manufacturer: 'Control iD' };
+    }
+    case 'topdata': {
+      const res = await topdata.getTopdataPaperRollStatus(ip, port, getTopdataOptions(eq));
+      return { ...res, manufacturer: 'Topdata' };
     }
     default: {
       return { ok: false, status: 'Normal', paperOk: true, lowPaper: false, description: `Sensor de bobina não suportado para tipo #${eq.tipoId}`, manufacturer: 'Generic', latencyMs: 0 };
@@ -170,6 +194,10 @@ async function collectEquipmentRecords(eq, nsr = 0, count = 100) {
       const maxNsr = records.reduce((max, r) => (r.Nsr > max ? r.Nsr : max), startNsr);
       return { ok: true, records, lastNsr: maxNsr, rawCount: records.length, manufacturer: 'Control iD' };
     }
+    case 'topdata': {
+      const res = await topdata.collectTopdataRecords(ip, port, startNsr, count, getTopdataOptions(eq));
+      return { ...res, manufacturer: 'Topdata' };
+    }
     default: {
       return { ok: false, records: [], lastNsr: startNsr, rawCount: 0, manufacturer: 'Generic', error: `AFD collection for type #${eq.tipoId} not yet implemented` };
     }
@@ -200,6 +228,10 @@ async function sendEquipmentEmployees(eq, employees = []) {
     case 'controlid': {
       const res = await controlid.sendControlIdEmployees(ip, port, employees, 'admin', password || 'admin');
       return { ...res, manufacturer: 'Control iD' };
+    }
+    case 'topdata': {
+      const res = await topdata.sendTopdataEmployees(ip, port, employees, getTopdataOptions(eq));
+      return { ...res, manufacturer: 'Topdata' };
     }
     default: {
       return { ok: false, count: 0, manufacturer: 'Generic', error: `Employee sync for type #${eq.tipoId} not yet implemented` };
@@ -233,6 +265,10 @@ async function sendEquipmentEmployer(eq, employer) {
       const res = await controlid.sendControlIdEmployer(ip, port, employer, 'admin', password || 'admin');
       return { ...res, manufacturer: 'Control iD' };
     }
+    case 'topdata': {
+      const res = await topdata.sendTopdataEmployer(ip, port, employer, getTopdataOptions(eq));
+      return { ...res, manufacturer: 'Topdata' };
+    }
     default: {
       return { ok: false, manufacturer: 'Generic', latencyMs: 0, error: `Employer sync for type #${eq.tipoId} not yet implemented` };
     }
@@ -263,6 +299,10 @@ async function receiveEquipmentEmployer(eq) {
     case 'controlid': {
       const res = await controlid.getControlIdEmployer(ip, port, 'admin', password || 'admin');
       return { ...res, manufacturer: 'Control iD' };
+    }
+    case 'topdata': {
+      const res = await topdata.receiveTopdataEmployer(ip, port, getTopdataOptions(eq));
+      return { ...res, manufacturer: 'Topdata' };
     }
     default: {
       return { ok: false, manufacturer: 'Generic', latencyMs: 0, error: `Employer read for type #${eq.tipoId} not yet implemented` };
@@ -297,6 +337,10 @@ async function receiveEquipmentBiometrics(eq, employees = [], onProgress = null)
       const res = await controlid.getControlIdBiometrics(ip, port, employees, 'admin', password || 'admin', onProgress);
       return { ...res, tipoBiometria: 16, manufacturer: 'Control iD' };
     }
+    case 'topdata': {
+      const res = await topdata.receiveTopdataBiometrics(ip, port, employees, getTopdataOptions(eq), onProgress);
+      return { ...res, tipoBiometria: eq.tipoBiometria ?? 3, manufacturer: 'Topdata' };
+    }
     default: {
       return { ok: false, biometrics: [], count: 0, tipoBiometria: 0, manufacturer: 'Generic', latencyMs: 0, error: `Biometrics extraction for type #${eq.tipoId} not yet implemented` };
     }
@@ -330,6 +374,10 @@ async function deleteEquipmentEmployees(eq, employees = [], onProgress = null) {
       const res = await controlid.deleteControlIdEmployees(ip, port, employees, 'admin', password || 'admin', onProgress);
       return { ...res, manufacturer: 'Control iD' };
     }
+    case 'topdata': {
+      const res = await topdata.deleteTopdataEmployees(ip, port, employees, getTopdataOptions(eq), onProgress);
+      return { ...res, manufacturer: 'Topdata' };
+    }
     default: {
       return { ok: false, count: 0, manufacturer: 'Generic', latencyMs: 0, error: `Employee deletion for type #${eq.tipoId} not yet implemented` };
     }
@@ -359,6 +407,10 @@ async function clearEquipmentEmployees(eq) {
     case 'controlid': {
       const res = await controlid.clearControlIdEmployees(ip, port, 'admin', password || 'admin');
       return { ...res, manufacturer: 'Control iD' };
+    }
+    case 'topdata': {
+      const res = await topdata.clearTopdataEmployees(ip, port, getTopdataOptions(eq));
+      return { ...res, manufacturer: 'Topdata' };
     }
     default: {
       return { ok: false, manufacturer: 'Generic', latencyMs: 0, error: `Employee wipe for type #${eq.tipoId} not yet implemented` };

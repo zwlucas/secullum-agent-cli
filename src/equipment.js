@@ -81,8 +81,21 @@ function getEquipmentTypeName(typeId) {
 function extractEquipmentPort(eq) {
   if (eq.Porta || eq.porta) return Number(eq.Porta || eq.porta);
 
+  const tipoId = Number(eq.MarcaModelo ?? eq.marcaModelo ?? eq.TipoEquipamento ?? eq.tipoEquipamento ?? eq.Tipo ?? eq.tipo ?? 0);
+  const isTopdata = [8, 9, 10, 41, 45, 46].includes(tipoId);
+
   if (eq.Configuracao) {
     const parts = eq.Configuracao.split('\\');
+    // Topdata NATIVO format: index 4 is PortaDoInner
+    if (parts[0] === 'NATIVO' && parts.length > 4 && parts[4] && !isNaN(Number(parts[4]))) {
+      const p = Number(parts[4]);
+      if (p > 0 && p <= 65535) return p;
+    }
+    // Topdata legacy format: index 2 is Porta
+    if (isTopdata && parts.length > 2 && parts[2] && !isNaN(Number(parts[2]))) {
+      const p = Number(parts[2]);
+      if (p > 0 && p <= 65535) return p;
+    }
     // HenryRepConfiguracao index 10 is PortaTcp
     if (parts.length > 10 && parts[10] && !isNaN(Number(parts[10]))) {
       const p = Number(parts[10]);
@@ -97,7 +110,7 @@ function extractEquipmentPort(eq) {
     }
   }
 
-  return 3000; // Standard default Henry / REP port
+  return isTopdata ? 3570 : 3000;
 }
 
 /**
@@ -117,19 +130,42 @@ function normalizeEquipment(raw, addedIds = []) {
   const porta = extractEquipmentPort(raw);
   const adicionado = addedIds.includes(Number(id));
 
-  // Extract manufacturer configuration tokens (Henry, Control iD, etc.)
+  // Extract manufacturer configuration tokens (Henry, Control iD, Topdata, etc.)
   let senha = '';
   let ultimoNsr = 0;
   let numeroSerial = '';
   let usuario = '';
   let senhaUsuario = '';
+  let chaveComunicacao = '';
+  let cpfResponsavel = '';
+  let tipoBiometria = null;
+
   if (raw.Configuracao) {
     const parts = raw.Configuracao.split('\\');
-    if (parts.length > 0) numeroSerial = parts[0] || '';
-    if (parts.length > 1) senha = parts[1] || '';
-    if (parts.length > 6 && !isNaN(Number(parts[6]))) ultimoNsr = Number(parts[6]);
-    if (parts.length > 21) usuario = parts[21] || '';
-    if (parts.length > 22) senhaUsuario = parts[22] || '';
+    const isTopdata = [8, 9, 10, 41, 45, 46].includes(Number(tipoId));
+
+    if (isTopdata) {
+      if (parts[0] === 'NATIVO') {
+        numeroSerial = parts[1] || '';
+        if (parts[2] && !isNaN(Number(parts[2]))) ultimoNsr = Number(parts[2]);
+        chaveComunicacao = parts[7] || '';
+        cpfResponsavel = parts[8] || '';
+        if (parts.length > 17 && !isNaN(Number(parts[17]))) tipoBiometria = Number(parts[17]);
+      } else {
+        numeroSerial = parts[0] || '';
+        chaveComunicacao = parts[4] || '';
+        cpfResponsavel = parts[17] || '';
+        if (parts.length > 18 && !isNaN(Number(parts[18]))) ultimoNsr = Number(parts[18]);
+        if (parts.length > 25 && !isNaN(Number(parts[25]))) tipoBiometria = Number(parts[25]);
+      }
+      senha = chaveComunicacao;
+    } else {
+      if (parts.length > 0) numeroSerial = parts[0] || '';
+      if (parts.length > 1) senha = parts[1] || '';
+      if (parts.length > 6 && !isNaN(Number(parts[6]))) ultimoNsr = Number(parts[6]);
+      if (parts.length > 21) usuario = parts[21] || '';
+      if (parts.length > 22) senhaUsuario = parts[22] || '';
+    }
   }
 
   return {
@@ -144,6 +180,9 @@ function normalizeEquipment(raw, addedIds = []) {
     senha,
     usuario,
     senhaUsuario,
+    chaveComunicacao,
+    cpfResponsavel,
+    tipoBiometria,
     ultimoNsr,
     numeroSerial,
     configuracao: raw.Configuracao || '',
