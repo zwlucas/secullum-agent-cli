@@ -159,6 +159,13 @@ function normalizeEquipment(raw, addedIds = []) {
         if (parts.length > 25 && !isNaN(Number(parts[25]))) tipoBiometria = Number(parts[25]);
       }
       senha = chaveComunicacao;
+    } else if ([5, 6, 7, 35, 36, 38].includes(Number(tipoId))) {
+      // Control iD: index 0 is Serial, index 1 is Senha, index 2 is UltimoNsr
+      if (parts.length > 0) numeroSerial = parts[0] || '';
+      if (parts.length > 1) senha = parts[1] || '';
+      if (parts.length > 2 && !isNaN(Number(parts[2]))) ultimoNsr = Number(parts[2]);
+      if (parts.length > 11) usuario = parts[11] || '';
+      if (parts.length > 12) senhaUsuario = parts[12] || '';
     } else {
       if (parts.length > 0) numeroSerial = parts[0] || '';
       if (parts.length > 1) senha = parts[1] || '';
@@ -192,10 +199,45 @@ function normalizeEquipment(raw, addedIds = []) {
   };
 }
 
+/**
+ * Update the last collected NSR inside an equipment's Configuracao string.
+ * Discovered via REA from HenryRepConfiguracao, ControliDRepConfiguracao, and InnerRepConfiguracao.
+ * @param {string} configStr - Raw \ delimited configuration string
+ * @param {number|string} tipoId - Equipment model type ID
+ * @param {number|string} newNsr - New last collected NSR
+ * @returns {string} - Updated configuration string
+ */
+function updateEquipmentConfigNsr(configStr, tipoId, newNsr) {
+  if (!configStr || typeof configStr !== 'string') return configStr || '';
+  const parts = configStr.split('\\');
+  const tid = Number(tipoId);
+  const nsrStr = String(newNsr);
+
+  if ([8, 9, 10, 41, 45, 46].includes(tid)) {
+    // Topdata Inner Rep
+    if (parts[0] === 'NATIVO') {
+      if (parts.length > 2) parts[2] = nsrStr;
+    } else {
+      if (parts.length > 18) parts[18] = nsrStr;
+    }
+  } else if ([5, 6, 7, 35, 36, 38].includes(tid)) {
+    // Control iD Rep
+    if (parts.length > 2) parts[2] = nsrStr;
+  } else {
+    // Henry (Prisma, Hexa, Primme) and other standard models (index 6 is UltimoNSRColetado)
+    if (parts.length > 6) {
+      parts[6] = nsrStr;
+    }
+  }
+
+  return parts.join('\\');
+}
+
 module.exports = {
   EQUIPMENT_TYPES,
   getEquipmentTypeName,
   extractEquipmentPort,
   normalizeEquipment,
+  updateEquipmentConfigNsr,
 };
 

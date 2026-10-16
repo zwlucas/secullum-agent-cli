@@ -237,11 +237,26 @@ async function equipmentCollectUsbCommand(targetId, extraArgs = []) {
   }
 
   // Upload to Secullum Cloud
-  process.stdout.write(`\n${colors.dim}Transmitindo ${parsed.records.length} marcações para o Secullum PontoWeb Cloud...${colors.reset}\r`);
   try {
     await uploadPunchRecords(parsed.records, false);
     success(`${parsed.records.length} marcações offline enviadas com sucesso para o Secullum Cloud!`);
     keyValue('Novo Último NSR Registrado', String(parsed.maxNsr));
+
+    if (eq) {
+      try {
+        const { RealTimeGateway } = require('../realtime');
+        const { updateEquipmentConfigNsr } = require('../equipment');
+        const gateway = new RealTimeGateway({ equipments: [eq.id], autoReconnect: false });
+        await gateway.connect();
+        const updatedConfig = updateEquipmentConfigNsr(eq.configuracao, eq.tipoId, parsed.maxNsr);
+        gateway.informarConfiguracoesEquipamento(eq.id, updatedConfig);
+        gateway.informarNsrEquipamento(eq.id, parsed.maxNsr);
+        gateway.receberRegistrosTabelaTemporaria();
+        gateway.informarTerminoComunicacao(eq.id, 8, '');
+        await new Promise((r) => setTimeout(r, 800));
+        gateway.disconnect();
+      } catch {}
+    }
   } catch (err) {
     warn(`Batidas decodificadas com sucesso, mas ocorreu falha ao enviar à nuvem: ${err.message}`);
   }

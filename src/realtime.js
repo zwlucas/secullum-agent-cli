@@ -409,6 +409,21 @@ class RealTimeGateway extends EventEmitter {
   }
 
   /**
+   * Inform Secullum Cloud of updated equipment configuration string (e.g. updated UltimoNSR).
+   * Discovered via REA from ComunicacaoService.InformarConfiguracoesEquipamentoAsync.
+   * Method: 'InformarConfiguracoesEquipamento' on Hub 'Comunicacao'
+   * Arguments: [ equipamentoId (int), configuracao (string) ]
+   * @param {number|string} equipId
+   * @param {string} configuracao
+   */
+  informarConfiguracoesEquipamento(equipId, configuracao) {
+    this.sendHubMethod('Comunicacao', 'InformarConfiguracoesEquipamento', [
+      Number(equipId),
+      String(configuracao || ''),
+    ]);
+  }
+
+  /**
    * Notify Secullum Cloud that an equipment is added to this agent.
    * Method: 'AdicionarEquipamentoAgente' on Hub 'Comunicacao'
    * @param {number|string} equipId

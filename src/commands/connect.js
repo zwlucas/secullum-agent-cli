@@ -9,7 +9,7 @@
 const os = require('node:os');
 const { loadSession, getAddedEquipmentIds } = require('../session');
 const { listEquipments, uploadPunchRecords, fetchEmployees, fetchEmployer, uploadBiometrics } = require('../pontoweb');
-const { normalizeEquipment } = require('../equipment');
+const { normalizeEquipment, updateEquipmentConfigNsr } = require('../equipment');
 const {
   syncEquipmentDateTime,
   collectEquipmentRecords,
@@ -97,6 +97,53 @@ async function connectCommand(args = []) {
     }
   }
 
+  // Persistent runtime state for each active equipment to avoid re-parsing loss and retain NSR/telemetry
+  const equipmentState = new Map();
+  for (const eqRaw of activeEquipments) {
+    const eq = normalizeEquipment(eqRaw);
+    const id = Number(eq.id);
+    equipmentState.set(id, {
+      raw: eqRaw,
+      ultimoNsr: Number(eq.ultimoNsr || 0),
+      configuracao: String(eqRaw.Configuracao || ''),
+      lastConnected: Boolean(initialStatusEquip[id]),
+      lastPaperStatus: initialStatusBobina[id] || 'Normal',
+    });
+  }
+
+  function commitEquipmentNsr(equipId, newNsr, gw) {
+    const id = Number(equipId);
+    const state = equipmentState.get(id);
+    if (!state) return;
+
+    const eqRaw = state.raw;
+    const tipoId =
+      eqRaw.MarcaModelo ??
+      eqRaw.marcaModelo ??
+      eqRaw.TipoEquipamento ??
+      eqRaw.tipoEquipamento ??
+      eqRaw.Tipo ??
+      eqRaw.tipo ??
+      0;
+
+    state.ultimoNsr = Number(newNsr);
+    const updatedConfig = updateEquipmentConfigNsr(state.configuracao, tipoId, newNsr);
+    state.configuracao = updatedConfig;
+    eqRaw.Configuracao = updatedConfig;
+
+    const inAll = allEquipments.find((e) => Number(e.Id ?? e.id) === id);
+    if (inAll) {
+      inAll.Configuracao = updatedConfig;
+    }
+
+    if (gw && gw.isAuthenticated) {
+      try {
+        gw.informarConfiguracoesEquipamento(id, updatedConfig);
+        gw.informarNsrEquipamento(id, Number(newNsr));
+      } catch {}
+    }
+  }
+
   const gateway = new RealTimeGateway({
     equipments: activeEquipments,
     statusEquipamentos: initialStatusEquip,
@@ -153,8 +200,9 @@ async function connectCommand(args = []) {
             const probe = await probeTcp(eq.ip, eq.porta, 1500);
             const isConn = probe.ok;
 
-            if (eq.lastConnected !== isConn) {
-              eq.lastConnected = isConn;
+            const state = equipmentState.get(eq.id);
+            if (state && state.lastConnected !== isConn) {
+              state.lastConnected = isConn;
               gateway.informarStatusEquipamento(eq.id, isConn);
               const timeStr = new Date().toLocaleTimeString();
               if (isConn) {
@@ -185,34 +233,42 @@ async function connectCommand(args = []) {
             const eq = normalizeEquipment(eqRaw);
             if (!eq.ip || eq.comunicacao === 3) continue;
 
+            const state = equipmentState.get(eq.id);
+            const currentNsr = state ? state.ultimoNsr : eq.ultimoNsr;
+
             const probe = await probeTcp(eq.ip, eq.porta, 1500);
             if (!probe.ok) continue;
 
-            const res = await collectEquipmentRecords(eq, eq.ultimoNsr, 50);
-            if (res.ok && res.records && res.records.length > 0) {
-              const timeStr = new Date().toLocaleTimeString();
-              console.log(
-                `\n${colors.bold(colors.green(`[${timeStr}] [Auto-Coleta] ${res.records.length} nova(s) batida(s) de #${eq.id} (${eq.descricao})`))}`
-              );
-              try {
-                await uploadPunchRecords(res.records, true);
-                gateway.informarNsrEquipamento(eq.id, res.lastNsr);
-                gateway.receberRegistrosTabelaTemporaria();
-                gateway.informarTerminoComunicacao(eq.id, TipoTarefa.ReceberRegistros, '');
-                eq.ultimoNsr = res.lastNsr;
+            const res = await collectEquipmentRecords(eq, currentNsr, 50);
+            if (res.ok) {
+              if (res.records && res.records.length > 0) {
+                const timeStr = new Date().toLocaleTimeString();
                 console.log(
-                  `  ${colors.dim}Batidas salvas no Secullum Cloud. Novo NSR: ${res.lastNsr} ${symbols.check}${colors.reset}`
+                  `\n${colors.bold(colors.green(`[${timeStr}] [Auto-Coleta] ${res.records.length} nova(s) batida(s) de #${eq.id} (${eq.descricao})`))}`
                 );
-              } catch (upErr) {
-                console.log(`  ${colors.yellow}Falha ao subir para Secullum Cloud: ${upErr.message}${colors.reset}`);
+                try {
+                  await uploadPunchRecords(res.records, true);
+                  commitEquipmentNsr(eq.id, res.lastNsr, gateway);
+                  gateway.receberRegistrosTabelaTemporaria();
+                  gateway.informarTerminoComunicacao(eq.id, TipoTarefa.ReceberRegistros, '');
+                  console.log(
+                    `  ${colors.dim}Batidas salvas no Secullum Cloud. Novo NSR: ${res.lastNsr} ${symbols.check}${colors.reset}`
+                  );
+                } catch (upErr) {
+                  console.log(`  ${colors.yellow}Falha ao subir para Secullum Cloud: ${upErr.message}${colors.reset}`);
+                }
+              } else if (res.lastNsr > currentNsr) {
+                // Non-punch records in AFD advanced the clock's NSR
+                commitEquipmentNsr(eq.id, res.lastNsr, gateway);
+                gateway.informarTerminoComunicacao(eq.id, TipoTarefa.ReceberRegistros, '');
               }
             }
 
             // Paper roll sensor telemetry (EstadoBobina)
             try {
               const paper = await queryEquipmentPaperRoll(eq);
-              if (paper.ok && eq.lastPaperStatus !== paper.status) {
-                eq.lastPaperStatus = paper.status;
+              if (paper.ok && state && state.lastPaperStatus !== paper.status) {
+                state.lastPaperStatus = paper.status;
                 gateway.informarStatusBobina(eq.id, paper.status);
                 const timeStr = new Date().toLocaleTimeString();
                 if (paper.status === 'Sem Papel') {
@@ -286,16 +342,20 @@ async function connectCommand(args = []) {
       const targetRaw = allEquipments.find((e) => Number(e.Id ?? e.id) === Number(equipId));
       if (targetRaw) {
         const targetEq = normalizeEquipment(targetRaw);
+        const state = equipmentState.get(Number(equipId));
+        const currentNsr = state ? state.ultimoNsr : targetEq.ultimoNsr;
+
         gateway.sendCommunicationProgress(equipId, 'Coletando registros do relógio...', 25);
         try {
-          const res = await collectEquipmentRecords(targetEq, targetEq.ultimoNsr, 200);
+          const res = await collectEquipmentRecords(targetEq, currentNsr, 200);
           if (res.ok) {
             gateway.sendCommunicationProgress(equipId, 'Enviando registros para a nuvem...', 75);
             if (res.records.length > 0) {
               await uploadPunchRecords(res.records, false);
-              gateway.sendHubMethod('Comunicacao', 'InformarNsrEquipamento', [equipId, res.lastNsr]);
-              gateway.sendHubMethod('Comunicacao', 'ReceberRegistrosTabelaTemporaria', []);
-              targetEq.ultimoNsr = res.lastNsr;
+              gateway.receberRegistrosTabelaTemporaria();
+            }
+            if (res.lastNsr > currentNsr || res.records.length > 0) {
+              commitEquipmentNsr(equipId, res.lastNsr, gateway);
             }
             success(`Coleta concluída para #${equipId}: ${res.rawCount} registros (NSR: ${res.lastNsr})`);
             gateway.sendCommunicationProgress(equipId, `${res.rawCount} registros coletados com sucesso`, 100);
@@ -313,6 +373,25 @@ async function connectCommand(args = []) {
       } else {
         gateway.sendCommunicationProgress(equipId, 'Equipamento desconhecido', 0);
         gateway.informarTerminoComunicacao(equipId, TipoTarefa.ReceberRegistros, 'Equipamento desconhecido');
+      }
+    }
+
+    // Cloud event: Equipment data updated in cloud
+    if (evt.eventName === 'AtualizarDadosEquipamento') {
+      const equipData = evt.args[0];
+      if (equipData) {
+        const eqId = Number(equipData.Id ?? equipData.id);
+        const idx = allEquipments.findIndex((e) => Number(e.Id ?? e.id) === eqId);
+        if (idx >= 0) allEquipments[idx] = equipData;
+        const state = equipmentState.get(eqId);
+        if (state) {
+          state.raw = equipData;
+          state.configuracao = equipData.Configuracao || state.configuracao;
+          const norm = normalizeEquipment(equipData);
+          if (norm.ultimoNsr > state.ultimoNsr) {
+            state.ultimoNsr = norm.ultimoNsr;
+          }
+        }
       }
     }
 

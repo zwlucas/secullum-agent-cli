@@ -343,14 +343,17 @@ async function equipmentCollectCommand(id, extraArgs = []) {
     // Request RealTime cloud to process and import punches into timesheet
     try {
       const { RealTimeGateway } = require('../realtime');
+      const { updateEquipmentConfigNsr } = require('../equipment');
       const gateway = new RealTimeGateway({ equipments: [eq.id], autoReconnect: false });
       await gateway.connect();
+      const updatedConfig = updateEquipmentConfigNsr(eq.configuracao, eq.tipoId, res.lastNsr);
+      gateway.informarConfiguracoesEquipamento(eq.id, updatedConfig);
       gateway.informarNsrEquipamento(eq.id, res.lastNsr);
       gateway.receberRegistrosTabelaTemporaria();
       gateway.informarTerminoComunicacao(eq.id, 8, '');
       await new Promise((r) => setTimeout(r, 800));
       gateway.disconnect();
-      info('Notificação de importação enviada com sucesso para o Secullum Cloud.');
+      info('Notificação de importação e configurações enviadas com sucesso para o Secullum Cloud.');
     } catch {}
   } catch (err) {
     warn(`Marcações coletadas do REP, mas ocorreu falha ao salvar na nuvem: ${err.message}`);
