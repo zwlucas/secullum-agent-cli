@@ -182,25 +182,16 @@ function aesEncryptHenry(plainText, key = HEXA_CHAVE_AES) {
  */
 function aesDecryptHenry(encBuffer, key = HEXA_CHAVE_AES) {
   if (!Buffer.isBuffer(encBuffer) || encBuffer.length < 16) {
-    return Buffer.alloc(0);
+    return encBuffer || Buffer.alloc(0);
+  }
+
+  // AES-128-CBC with prefixed 16-byte IV requires at least 32 bytes and multiple of 16
+  if (encBuffer.length < 32 || encBuffer.length % 16 !== 0) {
+    return encBuffer;
   }
 
   const iv = encBuffer.subarray(0, 16);
-  let ciphertext = encBuffer.subarray(16);
-
-  if (ciphertext.length === 0) {
-    return Buffer.alloc(0);
-  }
-
-  // Ciphertext must be a multiple of 16-byte block size for CBC mode without padding
-  const rem = ciphertext.length % 16;
-  if (rem !== 0) {
-    ciphertext = ciphertext.subarray(0, ciphertext.length - rem);
-  }
-
-  if (ciphertext.length === 0) {
-    return Buffer.alloc(0);
-  }
+  const ciphertext = encBuffer.subarray(16);
 
   try {
     const decipher = crypto.createDecipheriv('aes-128-cbc', key, iv);
@@ -211,7 +202,7 @@ function aesDecryptHenry(encBuffer, key = HEXA_CHAVE_AES) {
     while (end > 0 && plain[end - 1] === 0x00) end--;
     return plain.subarray(0, end);
   } catch {
-    return Buffer.alloc(0);
+    return encBuffer;
   }
 }
 
@@ -300,66 +291,132 @@ function exchangeHenryFrame(sock, sendBuffer = null, timeoutMs = 15000) {
 }
 
 /**
+ * Construct an RSA Public Key from Henry modulus and exponent buffers using DER SPKI encoding.
+ * Strips leading 0x00 byte from modulus if 129 bytes long.
+ * @param {Buffer} modBuf
+ * @param {Buffer} expBuf
+ * @returns {crypto.KeyObject}
+ */
+function rsaPublicKeyFromModExp(modBuf, expBuf) {
+  if (modBuf.length === 129 && modBuf[0] === 0x00) {
+    modBuf = modBuf.subarray(1);
+  }
+
+  function encodeLength(len) {
+    if (len < 0x80) return Buffer.from([len]);
+    const bytes = [];
+    let temp = len;
+    while (temp > 0) {
+      bytes.unshift(temp & 0xff);
+      temp >>= 8;
+    }
+    return Buffer.from([0x80 | bytes.length, ...bytes]);
+  }
+
+  function encodeInteger(buf) {
+    let val = buf;
+    if (val[0] & 0x80) {
+      val = Buffer.concat([Buffer.from([0x00]), val]);
+    }
+    const len = encodeLength(val.length);
+    return Buffer.concat([Buffer.from([0x02]), len, val]);
+  }
+
+  const modDer = encodeInteger(modBuf);
+  const expDer = encodeInteger(expBuf);
+  const seqBody = Buffer.concat([modDer, expDer]);
+  const seq = Buffer.concat([Buffer.from([0x30]), encodeLength(seqBody.length), seqBody]);
+
+  const rsaOid = Buffer.from([
+    0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01, 0x05, 0x00
+  ]);
+  const bitString = Buffer.concat([
+    Buffer.from([0x03]),
+    encodeLength(seq.length + 1),
+    Buffer.from([0x00]),
+    seq
+  ]);
+  const spki = Buffer.concat([
+    Buffer.from([0x30]),
+    encodeLength(rsaOid.length + bitString.length),
+    rsaOid,
+    bitString
+  ]);
+
+  return crypto.createPublicKey({ key: spki, format: 'der', type: 'spki' });
+}
+
+/**
  * Execute RSA + AES challenge-response authentication for Henry Advanced / Hexa clocks.
+ * Reverse-engineered via REA from Secullum.Comunicacao.HenryRepComunicacao.FazerAutenticacaoHexa.
+ *
  * @param {net.Socket} sock
- * @param {string} [password=""]
+ * @param {string|object} [optionsOrPassword=""]
  * @returns {Promise<{ ok: boolean, error?: string }>}
  */
-async function authenticateHenrySession(sock, password = '') {
+async function authenticateHenrySession(sock, optionsOrPassword = '') {
+  let usuario = '';
+  let senhaUsuario = '';
+  let password = '';
+
+  if (typeof optionsOrPassword === 'object' && optionsOrPassword !== null) {
+    usuario = optionsOrPassword.usuario || '';
+    senhaUsuario = optionsOrPassword.senhaUsuario || '';
+    password = optionsOrPassword.password || '';
+  } else {
+    password = String(optionsOrPassword || '');
+  }
+
   // 1. Send RA (Request RSA Public Key)
   const resRA = await exchangeHenryFrame(sock, buildHenryFrame('RA'));
   const parsedRA = parseHenryFrame(resRA);
   if (!parsedRA.ok) {
-    return { ok: false, error: `Failed to receive RA: ${parsedRA.error}` };
+    return { ok: false, error: `Falha ao solicitar chave RSA (RA): ${parsedRA.error}` };
   }
 
-  const raw = parsedRA.payload;
-  const keyPart = raw.substring(raw.indexOf('+000+') + 5);
-  const [modB64, expB64] = keyPart.split(']');
+  const payload = parsedRA.payload.replace(/^33\+RA\+000?\+?/, '').trim();
+  const [modB64, expB64] = payload.split(']');
   if (!modB64 || !expB64) {
-    return { ok: false, error: 'Invalid RSA public key response from clock' };
+    return { ok: false, error: 'Chave pública RSA inválida recebida do equipamento.' };
   }
 
-  const jwk = {
-    kty: 'RSA',
-    n: modB64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''),
-    e: expB64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''),
-  };
-  const pubKey = crypto.createPublicKey({ key: jwk, format: 'jwk' });
+  const modBuf = Buffer.from(modB64, 'base64');
+  const expBuf = Buffer.from(expB64.trim(), 'base64');
+  const pubKey = rsaPublicKeyFromModExp(modBuf, expBuf);
 
-  // 2. Build EA inner frame: "33+EA+00+1]<user>]<pass>]" + base64(HEXA_CHAVE_AES)
-  const eaInner = `33+EA+00+1]]${password}]${HEXA_CHAVE_AES.toString('base64')}`;
+  // 2. Build EA plain auth string: "1]<user>]<pass>]<b64(HEXA_CHAVE_AES)>"
+  const user = usuario || '';
+  const pass = senhaUsuario || password || '';
+  const plainAuth = `1]${user}]${pass}]${HEXA_CHAVE_AES.toString('base64')}`;
 
-  // 3. Encrypt EA payload with RSA Public Key
+  // 3. Encrypt auth payload with RSA Public Key (RSA_PKCS1_PADDING)
   const rsaEncrypted = crypto.publicEncrypt(
     { key: pubKey, padding: crypto.constants.RSA_PKCS1_PADDING },
-    Buffer.from(eaInner, 'ascii')
+    Buffer.from(plainAuth, 'ascii')
   );
 
-  const eaB64 = rsaEncrypted.toString('base64');
-  const eaFrame = frameRawPayload(Buffer.from(eaB64, 'ascii'));
-
-  // 4. Send EA frame
+  // 4. Send EA frame: "33+EA+00+<base64(rsaEncrypted)>"
+  const eaPayload = rsaEncrypted.toString('base64');
+  const eaFrame = buildHenryFrame('EA', eaPayload);
   const rawEA = await exchangeHenryFrame(sock, eaFrame);
-  if (rawEA.length < 5) {
-    return { ok: false, error: 'Invalid EA response length' };
-  }
+  const parsedEA = parseHenryFrame(rawEA);
 
-  // Clock returns AES-encrypted response
-  const eaLen = rawEA[1] | (rawEA[2] << 8);
-  const decryptedEA = aesDecryptHenry(rawEA.subarray(3, 3 + eaLen), HEXA_CHAVE_AES);
-  const eaStr = decryptedEA.toString('ascii');
-
-  // "00+00+012" or "33+EA+012" -> Success! Code 9 -> Auth failed
-  if (eaStr.includes('012') || eaStr.includes('000')) {
+  if (
+    parsedEA.payload.includes('+000') ||
+    parsedEA.payload.includes('+00+') ||
+    parsedEA.payload.includes('+012')
+  ) {
     return { ok: true };
   }
 
-  if (eaStr.includes('+9') || eaStr.includes('+009')) {
-    return { ok: false, error: 'Falha na autenticação do equipamento: verifique a senha.' };
+  if (parsedEA.payload.includes('+009') || parsedEA.payload.includes('+9')) {
+    return {
+      ok: false,
+      error: 'Falha na autenticação Henry: usuário ou senha de comunicação incorretos.',
+    };
   }
 
-  return { ok: true }; // Proceed
+  return { ok: true };
 }
 
 /**
@@ -397,18 +454,33 @@ function parseHenryAfdLine(line, equipmentId = 0) {
     if (clean.includes('-') && clean.length >= 35) {
       const datePart = clean.substring(10, 29); // "2026-10-15T18:03:00"
       const tzPart = clean.substring(29, 34);   // "-0300"
-      const cpf = clean.substring(34, 45).replace(/^0+/, '');
+      const rawCpf = clean.substring(34, 45).replace(/\D/g, '');
+      const cpf = rawCpf.padStart(11, '0');
       const parts = clean.split(' ');
       const crc = parts.length > 1 ? parts[parts.length - 1] : '';
 
+      let tzMinutes = -180;
+      if (tzPart && tzPart.length === 5) {
+        const sign = tzPart[0] === '-' ? -1 : 1;
+        const h = parseInt(tzPart.slice(1, 3), 10);
+        const m = parseInt(tzPart.slice(3, 5), 10);
+        if (!isNaN(h) && !isNaN(m)) {
+          tzMinutes = sign * (h * 60 + m);
+        }
+      }
+
       return {
         Nsr: nsr,
-        DataHora: `${datePart}${tzPart ? tzPart.slice(0, 3) + ':' + tzPart.slice(3) : ''}`,
+        DataHora: `${datePart}${tzPart ? tzPart.slice(0, 3) + ':' + tzPart.slice(3) : '-03:00'}`,
+        DataHoraAlterada: null,
         CPF: cpf,
         PIS: null,
         Matricula: null,
-        EquipamentoId: equipmentId,
+        EquipamentoId: Number(equipmentId),
+        TipoEvento: 3, // 3 = RegistroDePonto (Required for Secullum Cloud to process punch)
         RegistroPortaria671: true,
+        FusoHorarioId: null,
+        FusoHorarioMinutos: tzMinutes,
         Sentido: 0,
         Tipo: 0,
         CRC: crc,
@@ -425,12 +497,16 @@ function parseHenryAfdLine(line, equipmentId = 0) {
 
       return {
         Nsr: nsr,
-        DataHora: `${yr}-${mon}-${day}T${hr}:${min}:00`,
+        DataHora: `${yr}-${mon}-${day}T${hr}:${min}:00-03:00`,
+        DataHoraAlterada: null,
         CPF: null,
         PIS: pis,
         Matricula: null,
-        EquipamentoId: equipmentId,
+        EquipamentoId: Number(equipmentId),
+        TipoEvento: 3, // 3 = RegistroDePonto
         RegistroPortaria671: false,
+        FusoHorarioId: null,
+        FusoHorarioMinutos: -180,
         Sentido: 0,
         Tipo: 0,
         CRC: null,
@@ -444,18 +520,35 @@ function parseHenryAfdLine(line, equipmentId = 0) {
 
 /**
  * Collect punch records (AFD / Batidas) from a Henry REP via native protocol.
- * Supports both standard and Advanced RSA+AES encrypted models.
+ * Supports both standard 1510 and Advanced 671 / Hexa RSA+AES encrypted models.
+ * Reverse-engineered via REA from Secullum.Comunicacao.HenryRepComunicacao.ReceberRegistrosOffline.
+ *
  * @param {string} ip
  * @param {number} [port=3000]
  * @param {number} [startNsr=0]
  * @param {number} [count=100]
- * @param {string} [password=""]
+ * @param {string|object} [optionsOrPassword=""]
  * @param {number} [equipmentId=0]
  * @returns {Promise<{ ok: boolean, records: Array<object>, lastNsr: number, rawCount: number, error?: string }>}
  */
-async function collectHenryRecords(ip, port = 3000, startNsr = 0, count = 100, password = '', equipmentId = 0) {
+async function collectHenryRecords(
+  ip,
+  port = 3000,
+  startNsr = 0,
+  count = 100,
+  optionsOrPassword = '',
+  equipmentId = 0
+) {
+  let options = {};
+  if (typeof optionsOrPassword === 'object' && optionsOrPassword !== null) {
+    options = optionsOrPassword;
+  } else {
+    options = { password: String(optionsOrPassword || ''), equipmentId };
+  }
+  const eqId = options.equipmentId ?? equipmentId ?? 0;
+
   return new Promise((resolve) => {
-    const sock = net.createConnection({ host: ip, port, timeout: 15000 });
+    const sock = net.createConnection({ host: ip, port, timeout: 20000 });
     let resolved = false;
 
     const finish = (result) => {
@@ -466,72 +559,100 @@ async function collectHenryRecords(ip, port = 3000, startNsr = 0, count = 100, p
       }
     };
 
-    sock.on('timeout', () => finish({ ok: false, records: [], lastNsr: startNsr, error: 'Connection timeout' }));
-    sock.on('error', (err) => finish({ ok: false, records: [], lastNsr: startNsr, error: err.message }));
+    sock.on('timeout', () =>
+      finish({ ok: false, records: [], lastNsr: startNsr, error: 'Timeout de conexão com o relógio Henry.' })
+    );
+    sock.on('error', (err) =>
+      finish({ ok: false, records: [], lastNsr: startNsr, error: err.message })
+    );
 
     sock.on('connect', async () => {
       try {
         let isAdvanced = false;
 
-        // 1. Probe clock status via standard frame
-        const probeResp = await exchangeHenryFrame(sock, buildHenryFrame('RH'));
-        const parsedProbe = parseHenryFrame(probeResp);
-
-        // If clock replied with binary or didn't answer cleanly, or password given, attempt RSA/AES handshake
-        if (!parsedProbe.ok || parsedProbe.cmd !== 'RH' || password) {
-          const authRes = await authenticateHenrySession(sock, password);
+        // 1. Attempt RSA/AES handshake (RA -> EA) for Advanced / Hexa models
+        try {
+          const authRes = await authenticateHenrySession(sock, options);
           if (authRes.ok) {
             isAdvanced = true;
+          } else if (authRes.error && authRes.error.includes('usuário ou senha')) {
+            return finish({ ok: false, records: [], lastNsr: startNsr, error: authRes.error });
           }
+        } catch {
+          // If RA not supported or fails, fall back to standard Henry protocol
+          isAdvanced = false;
         }
 
-        // 2. Build receive records command (RR)
-        const cmdStr = `33+RR+00+N]${count}]${startNsr}`;
-        let respBuf;
+        const allRecords = [];
+        let currentNsr = Number(startNsr) || 0;
+        let maxNsr = currentNsr;
+        const batchLimit = Math.min(Math.max(count || 100, 10), 500);
 
-        if (isAdvanced) {
-          const encPayload = aesEncryptHenry(cmdStr, HEXA_CHAVE_AES);
-          respBuf = await exchangeHenryFrame(sock, frameRawPayload(encPayload));
-        } else {
-          respBuf = await exchangeHenryFrame(sock, buildHenryFrame('RR', `N]${count}]${startNsr}`));
-        }
+        // 2. Batch collection loop
+        while (true) {
+          const nextNsr = currentNsr + 1;
+          const paramStr = `N]${batchLimit}]${nextNsr}`;
+          let payloadText = '';
 
-        let payloadText = '';
+          if (isAdvanced) {
+            const cmdStr = `33+RR+00+${paramStr}`;
+            const reqFrame = frameRawPayload(aesEncryptHenry(Buffer.from(cmdStr, 'ascii'), HEXA_CHAVE_AES));
+            const respBuf = await exchangeHenryFrame(sock, reqFrame);
+            if (!respBuf || respBuf.length < 5) break;
 
-        if (isAdvanced) {
-          const pLen = respBuf[1] | (respBuf[2] << 8);
-          const dec = aesDecryptHenry(respBuf.subarray(3, 3 + pLen), HEXA_CHAVE_AES);
-          payloadText = dec.toString('ascii');
-        } else {
-          const parsed = parseHenryFrame(respBuf);
-          payloadText = parsed.payload;
-        }
+            const pLen = respBuf[1] | (respBuf[2] << 8);
+            const cipherPayload = respBuf.subarray(3, 3 + pLen);
+            const dec = aesDecryptHenry(cipherPayload, HEXA_CHAVE_AES);
+            payloadText = dec.toString('ascii');
+          } else {
+            const reqFrame = buildHenryFrame('RR', paramStr);
+            const respBuf = await exchangeHenryFrame(sock, reqFrame);
+            const parsed = parseHenryFrame(respBuf);
+            if (!parsed.ok) break;
+            payloadText = parsed.payload;
+          }
 
-        // Check if "009" (End of records)
-        if (payloadText.includes('+009') || payloadText.includes('+9')) {
-          return finish({ ok: true, records: [], lastNsr: startNsr, rawCount: 0, endReached: true });
-        }
+          // Check for termination codes: 050 (Sem registros), 009 (Fim), 103, etc.
+          if (
+            payloadText.includes('+050') ||
+            payloadText.includes('+009') ||
+            payloadText.includes('+9') ||
+            payloadText.includes('+103')
+          ) {
+            break;
+          }
 
-        // Parse records line by line
-        const lines = payloadText.split('\n');
-        const records = [];
-        let maxNsr = startNsr;
+          // Extract AFD records text after ']'
+          const bracketIdx = payloadText.indexOf(']');
+          const recordsText = bracketIdx >= 0 ? payloadText.substring(bracketIdx + 1) : payloadText;
+          const lines = recordsText.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
 
-        for (const line of lines) {
-          const record = parseHenryAfdLine(line, equipmentId);
-          if (record) {
-            records.push(record);
-            if (record.Nsr > maxNsr) {
-              maxNsr = record.Nsr;
+          if (lines.length === 0) break;
+
+          for (const line of lines) {
+            const rawNsr = parseInt(line.substring(0, 9), 10);
+            if (!isNaN(rawNsr) && rawNsr > maxNsr) {
+              maxNsr = rawNsr;
+              currentNsr = rawNsr;
             }
+
+            const record = parseHenryAfdLine(line, eqId);
+            if (record) {
+              allRecords.push(record);
+            }
+          }
+
+          // If returned fewer records than the requested batch size, reached the end
+          if (lines.length < batchLimit) {
+            break;
           }
         }
 
         finish({
           ok: true,
-          records,
+          records: allRecords,
           lastNsr: maxNsr,
-          rawCount: records.length,
+          rawCount: allRecords.length,
         });
       } catch (err) {
         finish({ ok: false, records: [], lastNsr: startNsr, error: err.message });

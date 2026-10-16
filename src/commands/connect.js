@@ -195,9 +195,9 @@ async function connectCommand(args = []) {
                 `\n${colors.bold(colors.green(`[${timeStr}] [Auto-Coleta] ${res.records.length} nova(s) batida(s) de #${eq.id} (${eq.descricao})`))}`
               );
               try {
-                await uploadPunchRecords(res.records, false);
-                gateway.sendHubMethod('Comunicacao', 'InformarNsrEquipamento', [eq.id, res.lastNsr]);
-                gateway.sendHubMethod('Comunicacao', 'ReceberRegistrosTabelaTemporaria', []);
+                await uploadPunchRecords(res.records, true);
+                gateway.informarNsrEquipamento(eq.id, res.lastNsr);
+                gateway.receberRegistrosTabelaTemporaria();
                 gateway.informarTerminoComunicacao(eq.id, TipoTarefa.ReceberRegistros, '');
                 eq.ultimoNsr = res.lastNsr;
                 console.log(

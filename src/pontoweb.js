@@ -163,18 +163,112 @@ async function getCloudVersion() {
 }
 
 /**
+ * Enrich punch records with employee PIS, Matricula, and default DadosRegistroOffline fields.
+ * Discovered via REA from ComunicacaoService.AtualizarListaRegistrosSemPisAsync.
+ * @param {Array<object>} records
+ * @param {Array<object>} [employees=[]]
+ * @returns {Array<object>}
+ */
+function enrichPunchRecords(records, employees = []) {
+  if (!records || !Array.isArray(records)) return [];
+
+  const empByCpf = new Map();
+  const empByPis = new Map();
+  const empByFolha = new Map();
+
+  for (const emp of employees || []) {
+    if (emp.Cpf) {
+      const cleanCpf = String(emp.Cpf).replace(/\D/g, '');
+      empByCpf.set(cleanCpf, emp);
+      empByCpf.set(cleanCpf.replace(/^0+/, ''), emp);
+    }
+    if (emp.NumeroPis) {
+      const cleanPis = String(emp.NumeroPis).replace(/\D/g, '');
+      empByPis.set(cleanPis, emp);
+      empByPis.set(cleanPis.replace(/^0+/, ''), emp);
+    }
+    if (emp.NumeroFolha) {
+      empByFolha.set(String(emp.NumeroFolha).trim(), emp);
+    }
+  }
+
+  return records.map((r) => {
+    let matchedEmp = null;
+
+    if (r.CPF) {
+      const clean = String(r.CPF).replace(/\D/g, '');
+      matchedEmp = empByCpf.get(clean) || empByCpf.get(clean.replace(/^0+/, ''));
+    }
+
+    if (!matchedEmp && r.PIS) {
+      const cleanPis = String(r.PIS).replace(/\D/g, '');
+      matchedEmp = empByPis.get(cleanPis) || empByPis.get(cleanPis.replace(/^0+/, ''));
+    }
+
+    if (!matchedEmp && r.Matricula) {
+      matchedEmp = empByFolha.get(String(r.Matricula).trim());
+    }
+
+    const copy = { ...r };
+
+    if (matchedEmp) {
+      if (!copy.PIS && matchedEmp.NumeroPis) {
+        copy.PIS = String(matchedEmp.NumeroPis).replace(/\D/g, '');
+      }
+      if (!copy.Matricula && matchedEmp.NumeroFolha) {
+        copy.Matricula = String(matchedEmp.NumeroFolha).trim();
+      }
+      if (!copy.CPF && matchedEmp.Cpf) {
+        copy.CPF = String(matchedEmp.Cpf).replace(/\D/g, '');
+      }
+    }
+
+    if (copy.TipoEvento === undefined) {
+      copy.TipoEvento = 3; // 3 = RegistroDePonto (CRITICAL: Secullum Cloud filters out records with TipoEvento != 3)
+    }
+    if (copy.FusoHorarioMinutos === undefined) {
+      copy.FusoHorarioMinutos = -180;
+    }
+    if (copy.DataHoraAlterada === undefined) {
+      copy.DataHoraAlterada = null;
+    }
+    if (copy.FusoHorarioId === undefined) {
+      copy.FusoHorarioId = null;
+    }
+    if (copy.Sentido === undefined) {
+      copy.Sentido = 0;
+    }
+    if (copy.Tipo === undefined) {
+      copy.Tipo = 0;
+    }
+
+    return copy;
+  });
+}
+
+/**
  * Upload collected punch records (AFD / Batidas de Ponto) to Secullum Cloud.
+ * Automatically enriches records with employee PIS/Matricula and sets TipoEvento: 3.
  * Discovered via REA from BatidasService.SalvarAsync.
  * @param {Array<object>} records - List of DadosRegistroOffline
- * @param {boolean} [isTemporary=false]
+ * @param {boolean} [isTemporary=true]
  * @param {object} [options]
  * @returns {Promise<any>}
  */
-async function uploadPunchRecords(records, isTemporary = false, options = {}) {
+async function uploadPunchRecords(records, isTemporary = true, options = {}) {
   if (!records || records.length === 0) {
     return { count: 0, status: 'No records to upload' };
   }
-  return post(`TabelaTemporaria/${Boolean(isTemporary)}`, records, options);
+
+  let enriched = records;
+  try {
+    const employees = await fetchEmployees(options);
+    enriched = enrichPunchRecords(records, employees);
+  } catch {
+    enriched = enrichPunchRecords(records, []);
+  }
+
+  return post(`TabelaTemporaria/${Boolean(isTemporary)}`, enriched, options);
 }
 
 /**
@@ -322,6 +416,7 @@ module.exports = {
   getAfdHeader,
   getCloudVersion,
   uploadPunchRecords,
+  enrichPunchRecords,
   fetchEmployees,
   fetchEmployer,
   uploadBiometrics,

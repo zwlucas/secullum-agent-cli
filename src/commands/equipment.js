@@ -336,9 +336,22 @@ async function equipmentCollectCommand(id, extraArgs = []) {
   // Upload to Secullum Cloud
   process.stdout.write(`\n${colors.dim}Enviando ${res.records.length} marcações para o Secullum PontoWeb Cloud...${colors.reset}\r`);
   try {
-    await uploadPunchRecords(res.records, false);
+    await uploadPunchRecords(res.records, true);
     success(`${res.records.length} marcações enviadas com sucesso para o Secullum Cloud!`);
     keyValue('Novo Último NSR', String(res.lastNsr));
+
+    // Request RealTime cloud to process and import punches into timesheet
+    try {
+      const { RealTimeGateway } = require('../realtime');
+      const gateway = new RealTimeGateway({ equipments: [eq.id], autoReconnect: false });
+      await gateway.connect();
+      gateway.informarNsrEquipamento(eq.id, res.lastNsr);
+      gateway.receberRegistrosTabelaTemporaria();
+      gateway.informarTerminoComunicacao(eq.id, 8, '');
+      await new Promise((r) => setTimeout(r, 800));
+      gateway.disconnect();
+      info('Notificação de importação enviada com sucesso para o Secullum Cloud.');
+    } catch {}
   } catch (err) {
     warn(`Marcações coletadas do REP, mas ocorreu falha ao salvar na nuvem: ${err.message}`);
   }

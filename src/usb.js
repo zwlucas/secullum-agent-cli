@@ -288,12 +288,16 @@ function parseAfdContent(content, equipId = null, startNsr = 0) {
         if (nsr > startNsr) {
           records.push({
             Nsr: nsr,
-            DataHora: dataHoraIso,
+            DataHora: dataHoraIso.endsWith('-03:00') ? dataHoraIso : `${dataHoraIso}-03:00`,
+            DataHoraAlterada: null,
             CPF: cpf,
             PIS: pis,
             Matricula: null,
             EquipamentoId: equipId ? Number(equipId) : null,
+            TipoEvento: 3, // RegistroDePonto
             RegistroPortaria671: is671,
+            FusoHorarioId: null,
+            FusoHorarioMinutos: -180,
             Sentido: 0,
             Tipo: 0,
             CRC: crc,

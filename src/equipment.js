@@ -121,11 +121,15 @@ function normalizeEquipment(raw, addedIds = []) {
   let senha = '';
   let ultimoNsr = 0;
   let numeroSerial = '';
+  let usuario = '';
+  let senhaUsuario = '';
   if (raw.Configuracao) {
     const parts = raw.Configuracao.split('\\');
     if (parts.length > 0) numeroSerial = parts[0] || '';
     if (parts.length > 1) senha = parts[1] || '';
     if (parts.length > 6 && !isNaN(Number(parts[6]))) ultimoNsr = Number(parts[6]);
+    if (parts.length > 21) usuario = parts[21] || '';
+    if (parts.length > 22) senhaUsuario = parts[22] || '';
   }
 
   return {
@@ -138,8 +142,11 @@ function normalizeEquipment(raw, addedIds = []) {
     ip,
     porta,
     senha,
+    usuario,
+    senhaUsuario,
     ultimoNsr,
     numeroSerial,
+    configuracao: raw.Configuracao || '',
     adicionado,
     nomeComputador: raw.NomeComputador || '',
     raw,

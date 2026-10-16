@@ -142,7 +142,12 @@ async function collectEquipmentRecords(eq, nsr = 0, count = 100) {
 
   switch (family) {
     case 'henry': {
-      const res = await henry.collectHenryRecords(ip, port, startNsr, count, password, eq.id);
+      const res = await henry.collectHenryRecords(ip, port, startNsr, count, {
+        password,
+        usuario: eq.usuario || '',
+        senhaUsuario: eq.senhaUsuario || '',
+        equipmentId: eq.id,
+      });
       return { ...res, manufacturer: 'Henry' };
     }
     case 'controlid': {

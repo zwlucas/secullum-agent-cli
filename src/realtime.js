@@ -390,6 +390,25 @@ class RealTimeGateway extends EventEmitter {
   }
 
   /**
+   * Request Secullum Cloud to process punch records stored in TabelaTemporaria.
+   * Discovered via REA from ComunicacaoService.ReceberRegistrosTabelaTemporariaAsync.
+   * Method: 'ReceberRegistrosTabelaTemporaria' on Hub 'Comunicacao'
+   */
+  receberRegistrosTabelaTemporaria() {
+    this.sendHubMethod('Comunicacao', 'ReceberRegistrosTabelaTemporaria', []);
+  }
+
+  /**
+   * Inform Secullum Cloud about the last collected NSR of an equipment.
+   * Method: 'InformarNsrEquipamento' on Hub 'Comunicacao'
+   * @param {number|string} equipId
+   * @param {number} nsr
+   */
+  informarNsrEquipamento(equipId, nsr) {
+    this.sendHubMethod('Comunicacao', 'InformarNsrEquipamento', [Number(equipId), Number(nsr)]);
+  }
+
+  /**
    * Notify Secullum Cloud that an equipment is added to this agent.
    * Method: 'AdicionarEquipamentoAgente' on Hub 'Comunicacao'
    * @param {number|string} equipId
