@@ -142,7 +142,7 @@ Rename-Item .\secullum-agent-windows-x64.exe .\secullum-agent.exe
 1. Baixe o binário para Linux diretamente pelo terminal:
 ```bash
 # Baixar o executável da última release:
-curl -LO https://github.com/SEU_USUARIO/secullum-agent-cli/releases/latest/download/secullum-agent-linux-x64
+curl -LO https://github.com/zwlucas/secullum-agent-cli/releases/latest/download/secullum-agent-linux-x64
 
 # Renomear para secullum-agent:
 mv secullum-agent-linux-x64 secullum-agent
